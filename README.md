@@ -1,169 +1,84 @@
-# 视频谱面提取工具（B站吉他谱 → PDF）
+# 视频扒谱工具（B站吉他谱 → PDF）
 
-> 背景：B 站吉他教学视频的谱面会实时显示在画面下方，但完整 PDF 谱需要付费。
-> 目标：自动截取视频中的谱片段，去重拼接成完整谱，输出 PDF。
+把 B 站吉他教学视频里**实时显示的谱面**自动截取、排序、人工核验后，输出为完整 PDF 和谱行图片。
 
-## 一、调研结论：已有的开源工具
+> 适用于"画面下方实时显示谱面（TAB/歌词谱），但完整 PDF 需付费购买"的 B 站教学视频。
 
-搜索到两个高度相关的开源项目，均已克隆到本目录：
+## 功能特性
 
-| 项目 | 语言 | 方案 | 特点 | 缺点 |
-|---|---|---|---|---|
-| [rohin-garg/youtube-guitar-tab-parser](https://github.com/rohin-garg/youtube-guitar-tab-parser)（`repo_rohin/`） | Python | 传统 CV | 纯本地、无需 API | 需手动框选谱面区域；去重粗糙（整图 MSE） |
-| [marcelpanse/youtube-guitar-tab-parser](https://github.com/marcelpanse/youtube-guitar-tab-parser)（`repo_marcelpanse/`） | TypeScript | Claude 视觉模型 | 全自动、去重聪明 | 需 Anthropic API key（国内难获取、付费）；仅 YouTube |
+- **输入**：B 站视频链接 或 本地视频文件
+- **全自动管线**：下载 → 抽帧 → 谱面区域检测 → 谱行切分 → 自动去重排序
+- **现代 GUI（PySide6）**：
+  - 大缩略图列表，**鼠标拖拽排序**、删除、找回被丢弃行、导入本地图片
+  - **相似行自动标黄**（疑似重复，人工判断），导航看板快速定位
+  - 侧边栏大图预览 + 双击全屏可缩放
+  - 核验状态可暂存，退出后随时「重新打开核验」继续编辑
+- **全自动模式**：跳过人工核验一键输出
+- **输出**：A4 PDF + 谱行图片文件夹，PDF 生成后自动做肤色检查剔除漏网的演奏画面
+- **纯本地**：无需 API key；免安装 exe 单文件分发
 
-**两者都只支持 YouTube URL，均未适配 B 站。** 因此本项目克隆了它们的源码用于学习，并**自行实现了一个 B 站适配版**（纯本地 CV，无需任何 API key）。
+## 使用
 
-### rohin-garg 版原理（`repo_rohin/`）
+### GUI（推荐）
 
-```
-main.py: 清空输出目录 → download() → extract_tab() → make_pdf()
-├── download_frames.py  yt-dlp 下载视频；OpenCV 每 2 秒抽一帧；统一缩到 1000px 宽
-├── region_selector.py  弹出窗口，用户鼠标拖拽框选谱面区域（手动！）
-├── extract_tab_pics.py 按框选区域裁剪所有帧 → tabs/tabNNNN.png
-└── clean_tab.py        相邻帧 MSE 误差 > 阈值才算"新内容"（粗糙去重）；
-                        A4@300DPI 白底竖排拼接 → output.pdf
-```
-核心代码只有几百行，思路直白：**抽帧 → 裁谱 → 去重 → 竖排**。去重用整图均方误差，对"播放光标扫过同一行"的情况无能为力（光标移动导致 MSE 超标，同一行会被保留多次），阈值也不好调。
-
-### marcelpanse 版原理（`repo_marcelpanse/`）
-
-```
-src/pipeline.ts: download → frames → detect → crop → dedup(2级) → pdf
-├── steps/download.ts  yt-dlp 下载（限 720p）
-├── steps/frames.ts    ffmpeg 每 2 秒抽帧
-├── steps/detect.ts    ★ 两阶段定位谱面区域：
-│     ① 在 6 张采样帧上叠加"带标签的 12×12 网格"，让 Claude 视觉模型
-│        报告谱面覆盖了哪些行/列（模型擅长选格子，不擅长精确像素坐标）；
-│     ② 用"白纸掩码"（高亮低饱和 = 纸面）做行列投影，把粗框吸附到
-│        真实纸边。多帧结果取中位数。
-├── steps/crop.ts      sharp 按框裁剪每帧
-├── steps/dedup.ts     dHash 感知哈希预去重（9x8 灰度，相邻像素比较，64 位）
-└── steps/classify.ts  ★ Claude 读取每行开头印刷的"小节号"：
-                        同一小节号只保留第一帧 → 播放光标扫过的重复帧全部
-                        折叠；非谱面帧（标题卡/片头）被剔除。
-                        小节号不变而光标在扫 → 去重；小节号变化 → 换行。
-└── steps/pdf.ts       pdf-lib 竖排 A4，标题写在第一页
-```
-其精华是**用小节号去重**：小节号是"内容是否变化"的可靠语义锚点，比像素相似度聪明得多——但依赖 LLM 读数字。
-
-## 二、自研工具：bili_tab_extractor（B 站适配版）
-
-融合上述两者思想，针对 B 站场景重新实现，**纯本地、零 API key、零配置**：
-
-```
-bili_tab_extractor/
-├── main.py      入口：URL/本地视频 → PDF（下载→抽帧→检测→裁剪→行级去重→拼接）
-├── download.py  yt-dlp 下载（原生支持 bilibili extractor；可选 cookies）
-├── frames.py    ffmpeg 按间隔抽帧（自动使用 imageio-ffmpeg 自带二进制）
-├── detect.py    ★ 谱面区域三级自动检测
-├── rows.py      ★ 行级切分 + 行级全局去重（核心）
-├── dedup.py     帧级去重（滚动拼接等场景的兜底）
-├── stitch.py    滚动拼接 + A4 PDF
-└── util.py      imread/imwrite 中文路径兼容 + 日志
-```
-
-### 关键设计
-
-**1. 谱面区域检测（detect.py）——三级策略**
-- ① 白纸掩码 + 行列投影（学 marcelpanse）：乐谱是"高亮低饱和背景 + 内部密集
-  暗色内容"，与彩色演奏画面区分明显；投影时对暗线缺口做桥接，并给画面
-  下方候选加分（B 站教学视频谱面通常在下部）。
-- ② Hough 平行线簇（深色 UI 谱面播放器时白纸失效）：TAB 的 6 弦线/五线谱
-  5 线是"紧密平行长水平线"的强特征（兼容 OpenCV 4/5 的返回值差异）。
-- ③ tkinter 手动框选兜底（学 rohin），也可 `--box` 直接指定。
-
-**2. 行级切分 + 行级去重（rows.py）——解决"整屏去重"的根本缺陷**
-- 问题：真实教学视频一屏显示多行谱，播放光标扫过任意一行都会让整屏画面
-  变化——整屏级去重要么重复保留（光标帧），要么误删（翻页帧）。
-- 解法：
-  - **按行切分**：用"内容行密度聚类 + 半行段合并"把一屏切成一行行谱
-    （五线谱 5 线 + TAB 6 线密排成一行；行间空隙切开）；行片段再向上
-    吸收"稀疏内容"（和弦名等行首标记，暗像素少但确属谱面）；
-  - **行级全局去重**：每行缩放后分网格提取 128 维内容指纹，与所有已
-    保留行比较——指纹接近时再做像素级确认（差异 <3% 判重复；更大差异
-    用光标免疫的内容指纹判定），同一行谱只保留第一次出现；
-  - **谱面行过滤（多特征）**：白底 + 稀疏内容 + 横贯长线 + **肤色检测**
-    ——演奏者手/脸的肤色是演奏画面的强特征，肤色占比 >5% 的行直接剔除；
-    切分阶段肤色密集段（演奏画面）不与谱面段合并，从源头隔离；
-  - **PDF 后检查（第二道防线）**：PDF 生成后用 pypdf 渲染每页做肤色检测，
-    混入演奏画面的页面自动移除，确保输出绝对干净。
-- 效果：《喜帖街》4 分钟视频 → 19 行纯净谱面 → 3 页 PDF（肤色 0%、彩色 0%、
-  全白底，演奏画面零残留）。
-
-**3. 滚动拼接（stitch.py）——处理"谱面像字幕一样滚动"的视频**
-- 用相位相关（cv2.phaseCorrelate）估计相邻保留帧的垂直位移，把每帧贴到
-  内容空间的绝对位置，还原完整长图；再按"内容行间距聚类"切回一行行谱。
-- 翻页/逐行型视频则每帧即一行，直接竖排。行级管线无法切分时才启用。
-
-**4. PDF（stitch.py）**：A4@300DPI 竖排（学 rohin），第一页带标题，
-自动去掉末尾空白页；放大后做 USM 锐化缓解模糊（谱面分辨率受限于视频
-清晰度——建议下载 720p 以上，工具默认 --max-height 720）。
-
-### 使用方法
-
-**推荐：免安装 GUI 程序**（`dist\视频扒谱工具.exe`，双击即用，PySide6 现代深色 UI）
-- 输入 B 站视频链接（或本地视频路径）→ 点「开始处理」（全自动按钮可跳过核验直接输出）；
-- 自动截取并排序谱行后弹出**人工核验窗口**：
-  - **大缩略图列表**（480px 宽，清晰可辨谱面），**鼠标拖拽排序**；
-  - 点选左侧行 → **右侧常驻大图预览**；**双击**弹出可滚轮缩放的全屏大图；
-  - 「找回被丢弃的行」：勾选加回自动去重误删的行；
-  - 「导入本地图片」：手动加入一行谱；
-  - 确认后点「确认输出」生成 PDF + 谱行图片文件夹；
-- 输出目录：`out/<视频标题>/`（PDF + 谱行图片/）。
-- 重新打包：`python build_exe.py`（PyInstaller，需先 `pip install -r requirements.txt`）。
-
-**最省事 CLI**：双击 `视频扒谱.bat`（工作区根目录）
-- 双击 → 粘贴 B 站视频链接 → 回车，自动输出 PDF；
-- 或把本地视频文件**直接拖到 bat 图标上**，松手即处理。
+运行 `dist\视频扒谱工具.exe`（免安装），或源码运行：
 
 ```bash
-# 命令行方式（需先进入工作区目录）：
-cd C:\Users\20849\Desktop\视频扒谱
-python bili_tab_extractor/main.py "https://www.bilibili.com/video/BVxxxxxxxxxx"
-
-# 或处理本地视频
-python bili_tab_extractor/main.py --video 视频.mp4
-
-# 常用选项
---interval 1        # 抽帧间隔（秒），滚动快的视频调小
---box 0,700,1000,950  # 跳过自动检测，手动指定谱面区域（0~1000 归一化）
---cookies cookies.txt # 部分 B 站视频需登录，用浏览器导出的 cookies
---keep-temp         # 保留中间帧/裁剪图（默认清理）
---no-scroll-stitch  # 禁用滚动拼接
-
-# 输出：out/<视频标题>/<视频标题>.pdf
+python bili_tab_extractor/gui_qt.py
 ```
 
-### 已验证
+1. 输入 B 站视频链接（或本地视频路径），点「开始处理」；
+2. 自动处理后弹出**人工核验窗口**：拖拽调整谱行顺序、删除误判行、找回被丢弃的行、双击放大确认；
+3. 点「确认输出」生成 PDF + 图片，或「全自动输出」跳过核验。
 
-- 全部模块单元测试（合成谱面帧：光标免疫、换行检测、滚动检测）通过；
-- 端到端：合成"教学视频"（彩色背景 + 底部谱面条带 + 翻页 + 光标扫动）
-  → 自动检测谱面区域 → 行级去重 → PDF 输出成功；
-- 真实 B 站视频实测：
-  - 《方大同《好不容易》弹唱教学》（29 分钟，BV1XC7Hz5EEk）
-    → 自动定位谱面 → 行级去重保留 156 行 → 18 页纯谱面 PDF
-    （无演奏画面、无空白页、时间覆盖完整）；
-  - 《「喜帖街」一把吉他还原神级现场》（4.3 分钟，BV1pgBoB4EV4）
-    → 25 行谱面 → 5 页 PDF（演奏画面已过滤，和弦名完整保留）。
+### 命令行
 
-### 局限性（诚实说明）
+```bash
+python bili_tab_extractor/main.py "https://www.bilibili.com/video/BVxxxx"
+python bili_tab_extractor/main.py --video 视频.mp4
+```
 
-- 谱面是**图片拼接**，不是 OCR 重排——PDF 里的谱与视频画面一致（清晰度
-  取决于视频分辨率/抽帧质量）；
-- 对"同一行谱内容 90% 相同"的极端排版（如完全重复的乐段）可能误去重；
-- B 站对 yt-dlp 有限流/风控，个别视频需要 `--cookies` 登录下载；
-- 滚动拼接依赖相位相关位移估计，对画面内有大量遮挡/转场的视频可能退化
-  为逐帧输出（内容不丢，只是可能重复）。
+常用选项：`--interval` 抽帧间隔、`--box` 手动指定谱面区域、`--rows-per-page` 每页行数、`--out` 输出目录。
 
-## 三、目录结构
+### 打包 exe
+
+```bash
+pip install -r requirements.txt
+python build_exe.py        # 生成 dist/视频扒谱工具.exe
+```
+
+## 依赖
+
+见 `requirements.txt`（yt-dlp / opencv / numpy / Pillow / pypdf / PySide6 / imageio-ffmpeg）。
+
+## 借鉴的开源项目
+
+思路借鉴了以下两个开源项目（均只支持 YouTube，本项目针对 B 站场景并用纯本地 CV 重新实现）：
+
+- [rohin-garg/youtube-guitar-tab-parser](https://github.com/rohin-garg/youtube-guitar-tab-parser)（yt-dlp 下载 + 区域裁剪 + PDF 拼接）
+- [marcelpanse/youtube-guitar-tab-parser](https://github.com/marcelpanse/youtube-guitar-tab-parser)（多帧采样定位谱面区域 + 去重思路）
+
+## 目录结构
 
 ```
 视频扒谱/
-├── repo_rohin/            # 开源项目①（已克隆，含源码）
-├── repo_marcelpanse/      # 开源项目②（已克隆，含源码 + 示例 PDF）
-├── bili_tab_extractor/    # 自研 B 站适配工具
-├── pylibs/                # 沙箱环境本地安装的依赖（yt-dlp 等）
-├── make_test_video.py     # 合成测试视频生成器
-└── README.md
+├── bili_tab_extractor/     # 核心代码
+│   ├── gui_qt.py           # PySide6 GUI（核验窗口）
+│   ├── pipeline.py         # 可复用处理流程
+│   ├── download.py         # yt-dlp 下载
+│   ├── frames.py           # ffmpeg 抽帧
+│   ├── detect.py           # 谱面区域检测
+│   ├── rows.py             # 谱行切分 + 去重
+│   ├── stitch.py           # PDF 输出 + 后检查
+│   └── main.py             # CLI 入口
+├── repo_rohin/             # 借鉴的开源项目①源码
+├── repo_marcelpanse/       # 借鉴的开源项目②源码
+├── build_exe.py            # 打包脚本
+└── 视频扒谱.bat               # 快捷启动脚本
 ```
+
+## 说明与局限
+
+- 输出谱面是**视频画面的图片拼接**，非 OCR 重排，清晰度取决于视频分辨率（建议下载 720p 以上）；
+- 谱行切分/去重依赖谱面形态（TAB、歌词谱、滚动/翻页式），**个别情况需要人工核验窗口微调**；
+- 部分 B 站视频受风控（HTTP 412），稍后或换网络重试即可，与工具无关。
