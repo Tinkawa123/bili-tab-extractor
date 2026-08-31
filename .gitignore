@@ -1,0 +1,33 @@
+# 依赖（用 requirements.txt 安装，不提交）
+pylibs/
+
+# 打包产物
+dist/
+build/
+*.spec
+
+# 输出结果
+out/
+
+# 测试视频/大文件
+*.mp4
+*.avi
+*.mkv
+*.mov
+
+# 临时工作目录
+_gui_work_*/
+_bili_tab_work_*/
+_smoke_work/
+_*_work/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 本地证书（个人环境）
+cacert.pem
+
+# 构建信息（打包时自动生成）
+bili_tab_extractor/_build_info.py

@@ -1,0 +1,9 @@
+# bili_tab_extractor 依赖清单
+# 常规安装: pip install -r requirements.txt
+yt-dlp>=2024.1.1
+pillow>=10.0
+numpy>=1.26
+opencv-python-headless>=4.8
+imageio-ffmpeg>=0.4.9
+pypdf>=4.0        # PDF 后检查（肤色检测移除异常页）
+pyinstaller>=6.0  # 打包 exe 用
