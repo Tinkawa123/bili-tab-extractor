@@ -31,3 +31,7 @@ cacert.pem
 
 # 构建信息（打包时自动生成）
 bili_tab_extractor/_build_info.py
+
+# 参考的开源项目（本地保留学习用，不上传 GitHub）
+repo_rohin/
+repo_marcelpanse/
