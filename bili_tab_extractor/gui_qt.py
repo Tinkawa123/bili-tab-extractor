@@ -34,6 +34,8 @@ from pipeline import process, TabRow, PipelineResult
 from stitch import make_pdf_from_rows, verify_and_clean_pdf
 from util import imread, imwrite, log
 from rows import row_fingerprint, _fp_dist
+from vlm import load_api_key
+from vlm_dedup import bar_label, find_duplicate_groups, read_bars_batch
 
 # 缩略图尺寸
 THUMB_W, THUMB_H = 480, 90
@@ -410,6 +412,34 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+class BarReader(QThread):
+    """后台批量读取小节号（VLM），带进度。"""
+
+    progress = Signal(int, int)   # (done, total)
+    done = Signal(object)         # {row_index: [bars]}（Python dict 用 object 传）
+    error = Signal(str)
+
+    def __init__(self, rows, cache_path, api_key=None, parent=None):
+        super().__init__(parent)
+        self.rows = rows
+        self.cache_path = cache_path
+        self.api_key = api_key
+
+    def run(self):
+        try:
+            results = read_bars_batch(
+                self.rows, api_key=self.api_key, cache_path=self.cache_path,
+                progress=lambda d, t, i, bars: self.progress.emit(d, t))
+            # 写回各行的 bars 字段（供渲染/去重判断）
+            for i, bars in results.items():
+                self.rows[i].bars = bars
+            self.done.emit(results)
+        except SystemExit as e:
+            self.error.emit(f"处理被终止: {e}")
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class ZoomDialog(QDialog):
     """双击弹出的可缩放大图窗口（滚轮缩放）。"""
 
@@ -464,11 +494,67 @@ class ReviewWindow(QMainWindow):
         self._thumbs: dict[int, QPixmap] = {}
         self._similar: dict[int, list[int]] = {}  # 原始索引 -> 相似行索引列表
         self._compute_similar()
+        # VLM 小节号去重
+        self._bar_thread: BarReader | None = None
+        self._bar_dups: dict[int, list[int]] = {}   # 行索引 -> 同小节号的其它行
+        self._bar_done = False
 
         self.setWindowTitle(f"人工核验 - {result.title}")
         self.resize(1250, 800)
 
         self._build_ui()
+        self._render_list()
+
+    # ---------- VLM 小节号去重 ----------
+    def _on_read_bars(self):
+        """后台批量读小节号，找出同一小节号的重复行。"""
+        if self._bar_thread and self._bar_thread.isRunning():
+            return
+        key = load_api_key()
+        if not key:
+            QMessageBox.warning(
+                self, "未配置 API Key",
+                "请先设置环境变量 DASHSCOPE_API_KEY，或在 "
+                "bili_tab_extractor/vlm_config.json 写入 {\"api_key\": \"sk-...\"}")
+            return
+        cache_path = os.path.join(
+            self.main_win.work_dir or os.getcwd(), "vlm_cache.json")
+        self.status_top.setText("AI 读取小节号中…")
+        self._bar_thread = BarReader(self.rows, cache_path, api_key=key, parent=self)
+        self._bar_thread.progress.connect(self._on_bar_progress)
+        self._bar_thread.done.connect(self._on_bar_done)
+        self._bar_thread.error.connect(self._on_bar_error)
+        self._bar_thread.start()
+
+    def _on_bar_progress(self, done: int, total: int):
+        self.status_top.setText(f"AI 读取小节号中… {done}/{total}")
+
+    def _on_bar_error(self, err: str):
+        self.status_top.setText("AI 读取失败")
+        QMessageBox.critical(self, "AI 读取失败", err)
+
+    def _on_bar_done(self, results: dict):
+        self._bar_done = True
+        # 按小节号找重复行
+        self._bar_dups = {}
+        groups = {}
+        for i, row in enumerate(self.rows):
+            for b in set(row.bars or []):
+                groups.setdefault(b, []).append(i)
+        dup_groups = [sorted(v) for v in groups.values() if len(v) >= 2]
+        for g in dup_groups:
+            for i in g:
+                self._bar_dups.setdefault(i, [x for x in g if x != i])
+        # 合并重复组（同一批行共享多小节号）
+        merged = []
+        for g in dup_groups:
+            if not any(set(g) & set(m) for m in merged):
+                merged.append(g)
+        self._bar_dup_groups = merged
+        n_bar_rows = sum(1 for r in self.rows if r.bars)
+        self.status_top.setText(
+            f"AI 检测完成：{n_bar_rows} 行识别出小节号，"
+            f"发现 {len(merged)} 组疑似重复小节")
         self._render_list()
 
     def _compute_similar(self):
@@ -530,6 +616,8 @@ class ReviewWindow(QMainWindow):
             lbl = QLabel(f"  疑似重复 {len(self._similar_groups)} 组（{n_dup} 行，已标黄）")
             lbl.setStyleSheet("color: #b8860b; font-weight: bold;")
             top.addWidget(lbl)
+        self.status_top = QLabel("")
+        top.addWidget(self.status_top)
         top.addStretch(1)
         # 导航看板：行号跳转
         top.addWidget(QLabel("跳转到第"))
@@ -544,6 +632,9 @@ class ReviewWindow(QMainWindow):
         self.next_sim_btn = QPushButton("下一处疑似重复")
         self.next_sim_btn.clicked.connect(self._next_similar)
         top.addWidget(self.next_sim_btn)
+        self.read_bars_btn = QPushButton("AI 读小节号去重")
+        self.read_bars_btn.clicked.connect(self._on_read_bars)
+        top.addWidget(self.read_bars_btn)
         lay.addLayout(top)
 
         # 左右分栏：列表 + 预览
@@ -608,13 +699,23 @@ class ReviewWindow(QMainWindow):
             pm = bgr_to_pixmap(row.image, THUMB_W, THUMB_H)
             self._thumbs[i] = pm
             text = f"第 {i + 1} 行   {row.image.shape[1]}×{row.image.shape[0]}   t={row.time:.0f}s"
-            if i in self._similar:
+            if row.bars:
+                text += f"   {bar_label(row.bars)}"
+            # 疑似重复提示：VLM 小节号重复 或 像素相似
+            bar_dup = i in self._bar_dups
+            pix_dup = i in self._similar
+            if bar_dup:
+                text += "   ⚠ 小节重复"
+            elif pix_dup:
                 text += "   ⚠ 疑似重复"
             item = QListWidgetItem(QIcon(pm), text)
             item.setData(Qt.UserRole, i)
             item.setSizeHint(QSize(THUMB_W, THUMB_H + 24))
-            if i in self._similar:
-                item.setBackground(QColor("#fff3cd"))  # 浅黄标出疑似重复
+            if bar_dup:
+                item.setBackground(QColor("#ffe0b2"))  # 橙色：小节号重复（更确凿）
+                item.setToolTip("VLM 识别出与其它行相同的小节号，疑似重复")
+            elif pix_dup:
+                item.setBackground(QColor("#fff3cd"))  # 浅黄：像素相似
             self.list_widget.addItem(item)
         # 更新跳转范围
         self.jump_spin.setRange(1, max(1, len(self.rows)))
@@ -627,13 +728,12 @@ class ReviewWindow(QMainWindow):
             self.list_widget.setCurrentItem(item)
 
     def _next_similar(self):
-        """跳到下一处疑似重复（循环）。"""
-        if not self._similar:
+        """跳到下一处疑似重复（像素相似 + 小节号重复，循环）。"""
+        flagged = set(self._similar) | set(self._bar_dups)
+        if not flagged:
             return
         cur = self.list_widget.currentRow()
-        # 收集所有相似行（按当前列表顺序的 row 号）
-        sim_rows = sorted(set(j for i in self._similar for j in [i] + self._similar[i]))
-        # 找当前行之后的第一个相似行
+        sim_rows = sorted(flagged)
         nxt = None
         for r in sim_rows:
             if r > cur:
@@ -643,8 +743,9 @@ class ReviewWindow(QMainWindow):
             nxt = sim_rows[0]
         if nxt is not None:
             item = self.list_widget.item(nxt)
-            self.list_widget.scrollToItem(item, QAbstractItemView.PositionAtCenter)
-            self.list_widget.setCurrentItem(item)
+            if item:
+                self.list_widget.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+                self.list_widget.setCurrentItem(item)
 
     def _current_rows(self) -> list[TabRow]:
         """按当前列表顺序返回 rows（拖拽后顺序已变）。"""
@@ -670,6 +771,20 @@ class ReviewWindow(QMainWindow):
         dlg = ZoomDialog(row.image.copy(), f"第 {orig + 1} 行预览（t={row.time:.0f}s）", self)
         dlg.exec()
 
+    def _recalc_bar_dups(self):
+        """按当前行的 bars 字段重算小节号重复（rows 变化后调用）。"""
+        self._bar_dups = {}
+        if not self._bar_done:
+            return
+        groups = {}
+        for i, row in enumerate(self.rows):
+            for b in set(row.bars or []):
+                groups.setdefault(b, []).append(i)
+        for g in groups.values():
+            if len(g) >= 2:
+                for i in g:
+                    self._bar_dups.setdefault(i, [x for x in g if x != i])
+
     def _delete_selected(self):
         item = self.list_widget.currentItem()
         if item is None:
@@ -677,6 +792,7 @@ class ReviewWindow(QMainWindow):
         orig = item.data(Qt.UserRole)
         del self.rows[orig]
         self._compute_similar()
+        self._recalc_bar_dups()
         self._render_list()
 
     def _recover(self):
@@ -692,6 +808,7 @@ class ReviewWindow(QMainWindow):
             self.rows.extend(added)
             self.rows.sort(key=lambda r: (r.time, r.index))
             self._compute_similar()
+            self._recalc_bar_dups()
             self._render_list()
 
     def _import_image(self):
@@ -706,6 +823,7 @@ class ReviewWindow(QMainWindow):
             return
         self.rows.append(TabRow(img, -1, os.path.basename(path), 0))
         self._compute_similar()
+        self._recalc_bar_dups()
         self._render_list()
 
     def _confirm_output(self):

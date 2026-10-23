@@ -35,3 +35,6 @@ bili_tab_extractor/_build_info.py
 # 参考的开源项目（本地保留学习用，不上传 GitHub）
 repo_rohin/
 repo_marcelpanse/
+
+# VLM API Key 配置（敏感凭据，绝不提交）
+bili_tab_extractor/vlm_config.json

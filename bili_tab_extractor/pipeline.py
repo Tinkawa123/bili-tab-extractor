@@ -35,13 +35,15 @@ from util import imread, imwrite, log
 class TabRow:
     """一行谱面。"""
 
-    __slots__ = ("image", "time", "source", "index")
+    __slots__ = ("image", "time", "source", "index", "bars")
 
-    def __init__(self, image: np.ndarray, time: float, source: str, index: int):
+    def __init__(self, image: np.ndarray, time: float, source: str, index: int,
+                 bars: list[int] | None = None):
         self.image = image      # BGR ndarray
         self.time = time        # 视频时间（秒）
         self.source = source    # 来源（crop 文件名 / 本地文件）
         self.index = index      # 行序号
+        self.bars = bars        # VLM 读出的小节号（None=未识别）
 
     def __repr__(self) -> str:
         return f"TabRow(t={self.time:.0f}s, h={self.image.shape[0]})"
