@@ -47,13 +47,14 @@ def _dense_fraction(gray: np.ndarray, y0: int, y1: int) -> float:
 
 
 def _skin_fraction(bgr: np.ndarray, y0: int, y1: int) -> float:
-    """段内肤色占比（HSV 肤色范围）。演奏画面（手/脸）肤色占比高，
+    """段内肤色占比（0~1 比例）。演奏画面（手/脸）肤色占比高，
     谱面墨迹/蓝色标记条不会被误判。"""
     seg = bgr[y0:y1 + 1]
     hsv = cv2.cvtColor(seg, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, (0, 30, 60), (25, 255, 255))
     mask |= cv2.inRange(hsv, (165, 30, 60), (180, 255, 255))
-    return float(mask.mean())
+    # mask 是 0/255 的 uint8，必须换算成 0~1 比例
+    return float((mask > 0).mean())
 
 
 SKIN_MERGE_FRAC = 0.15   # 段肤色占比高于此值视为演奏画面，不参与合并
@@ -78,6 +79,39 @@ def _has_staff_lines(gray: np.ndarray, y0: int, y1: int,
             if span > span_frac * w:
                 n += 1
     return n >= min_lines
+
+
+def count_staff_groups(img: np.ndarray, line_frac: float = 0.4,
+                       gap: int = 25, min_lines: int = 3) -> int:
+    """检测谱面内的"谱线组"数量（连续横向线组，每组 >= min_lines 条）。
+
+    用途：区分"整屏一行"（1 组谱线，如 TAB 三线 + 和弦图 + 数字）与
+    "多行排列"（2+ 组谱线，每组是一行独立谱）。
+    """
+    gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    dark = gray < 150
+    line_rows = []
+    for y in range(h):
+        cols = np.where(dark[y])[0]
+        if len(cols) > 0 and (cols.max() - cols.min()) > line_frac * w:
+            line_rows.append(y)
+    if not line_rows:
+        return 0
+    groups = 0
+    prev = None
+    count = 0
+    for y in line_rows:
+        if prev is None or y - prev <= gap:
+            count += 1
+        else:
+            if count >= min_lines:
+                groups += 1
+            count = 1
+        prev = y
+    if count >= min_lines:
+        groups += 1
+    return groups
 
 
 def _content_coverage(gray: np.ndarray, y0: int, y1: int) -> float:
@@ -260,15 +294,16 @@ def is_tab_row(row: np.ndarray, min_lines: int = 3,
     """
     gray = cv2.cvtColor(row, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
-    white_frac = float((gray > 230).mean())
+    # 亮背景：纯白(255) 到浅灰/米色(约 190) 都算（很多视频有滤镜/色调）
+    white_frac = float((gray > 190).mean())
     dark_frac = float((gray < 100).mean())
     if white_frac < 0.35 or dark_frac > 0.35:
         return False
-    # 肤色检查：演奏画面（手/脸）的强特征
+    # 肤色检查：演奏画面（手/脸）的强特征（按 0~1 比例）
     hsv = cv2.cvtColor(row, cv2.COLOR_BGR2HSV)
     skin = cv2.inRange(hsv, (0, 30, 60), (25, 255, 255))
     skin |= cv2.inRange(hsv, (165, 30, 60), (180, 255, 255))
-    if float(skin.mean()) > SKIN_ROW_FRAC:
+    if float((skin > 0).mean()) > SKIN_ROW_FRAC:
         return False
     dark = gray < 150
     n_long = 0

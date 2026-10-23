@@ -153,6 +153,46 @@ def _process_horizontal(crop_imgs, api_key, work_dir, p, use_vlm=True) -> list[T
     return rows
 
 
+def _is_real_horizontal_scroll(crop_imgs, min_shift: float = 30.0) -> tuple[bool, float]:
+    """判断是否"真横向滚动"（连续同向、幅度稳定的位移）。
+
+    翻页/静止型视频也会有零散位移（光标、局部变化），但方向和幅度杂乱；
+    真滚动（如 Guitar Pro 谱带）是连续同向、幅度接近的位移。
+    返回 (是否真滚动, 位移中位数)。
+    """
+    from stitch import estimate_shift
+
+    if len(crop_imgs) < 4:
+        return False, 0.0
+    step = max(1, len(crop_imgs) // 14)
+    picks = crop_imgs[::step][:14]
+    dxs = []
+    for i in range(1, len(picks)):
+        try:
+            dx, _dy, resp = estimate_shift(picks[i - 1], picks[i])
+        except Exception:
+            continue
+        if abs(dx) >= min_shift and resp > 0.1:
+            dxs.append(dx)
+    if len(dxs) < 3:
+        return False, 0.0
+    # 连续同号的最大段长
+    best_run = 1
+    run = 1
+    for i in range(1, len(dxs)):
+        if dxs[i] * dxs[i - 1] > 0:
+            run += 1
+            best_run = max(best_run, run)
+        else:
+            run = 1
+    # 幅度一致性（0.5~1.5 倍中位数）
+    mags = [abs(d) for d in dxs]
+    med = sorted(mags)[len(mags) // 2]
+    consistent = sum(1 for m in mags if 0.5 * med <= m <= 1.5 * med) / len(mags)
+    ok = best_run >= 3 and consistent >= 0.6
+    return ok, med
+
+
 def process(url: str = None, video: str = None, title: str = None,
             interval: float = 2.0, sample: int = 6, max_height: int = 720,
             cookies: str = None, box_arg: str = None,
@@ -217,15 +257,49 @@ def process(url: str = None, video: str = None, title: str = None,
         log.info(f"谱面类型检测: {scroll_type}")
 
         all_rows: list[TabRow] = []
-        if scroll_type == "horizontal":
-            # 横向滚动谱带：优先用 VLM 读小节号去重（可靠）；
-            # 无 API Key 时回退到像素分段拼接。
+        used_horizontal = False
+
+        # 判断谱面是"整屏一行"（和弦图+TAB+数字 = 一条完整谱行，高度通常 <700px）
+        # 还是"多行排列"（一屏 2+ 条独立谱行）。
+        # 整屏一行不要按"内容行密度"切分，否则会被拆成和弦图行/TAB行/数字行碎片。
+        from rows import count_staff_groups
+
+        screen_single_row = False
+        if crop_imgs:
+            heights = [img.shape[0] for img in crop_imgs[:12]]
+            med_h = sorted(heights)[len(heights) // 2]
+            groups = [count_staff_groups(img) for img in crop_imgs[:6]]
+            med_groups = sorted(groups)[len(groups) // 2]
+            # 整屏一行：高度 <=650px（单条谱行，含和弦图+TAB+数字）；
+            # 多行排列通常 >650px（一屏 2~3 条独立谱行）。
+            # 谱线组数只做记录，不作为硬条件（底部数字行/和弦图会额外成组）。
+            screen_single_row = med_h <= 650
+            log.info(f"谱面布局: 高度中位数 {med_h}px, 谱线组 {med_groups} → "
+                     f"{'整屏一行' if screen_single_row else '多行排列'}")
+
+        # 判断是否"真横向滚动"（连续同向、幅度稳定）
+        scroll_significant, med_dx = _is_real_horizontal_scroll(crop_imgs)
+        log.info(f"横向滚动判定: {'真滚动' if scroll_significant else '静止/翻页'} "
+                 f"（位移中位数 {med_dx:.0f}px）")
+
+        if scroll_significant and screen_single_row:
+            # 横向滚动谱带：VLM 读小节号去重（优先），像素拼接回退
             all_rows = _process_horizontal(
                 crop_imgs, api_key, work_dir, p, vlm_on_horizontal)
+            used_horizontal = True
+        elif screen_single_row:
+            # 整屏一行（静止/翻页/轻微滚动）：每帧一屏作为一行，后续像素去重
+            p("正在整理整屏谱行…", 45)
+            for ci, img in enumerate(crop_imgs):
+                try:
+                    img = crop_screen_top(img)
+                except Exception:
+                    pass
+                all_rows.append(TabRow(img, ci * interval, f"screen-{ci}", ci))
 
         if not all_rows:
-            # 行级切分：收集所有行（含被去重的，供人工核验找回）
-            from rows import split_crop_rows, dedup_rows
+            # 行级切分（多行排列）：收集所有行（含被去重的，供人工核验找回）
+            from rows import split_crop_rows
 
             n_crops = len(crops)
             for ci, c in enumerate(crops):
@@ -239,7 +313,7 @@ def process(url: str = None, video: str = None, title: str = None,
                     p(f"切分行片段 {ci}/{n_crops}…", 40 + 30 * ci / n_crops)
 
         if len(all_rows) < 3:
-            # 行级切分失败（滚动型/无行结构），用整屏裁剪作为"行"
+            # 兜底：整屏裁剪作为"行"
             log.warn("行片段较少，回退到整屏模式")
             all_rows = []
             for ci, c in enumerate(crops):
@@ -249,8 +323,8 @@ def process(url: str = None, video: str = None, title: str = None,
                 all_rows.append(TabRow(img, ci * interval, c, 0))
 
         p("正在自动排序去重…", 75)
-        if scroll_type == "horizontal":
-            # 横向拼接后的段已经是不重叠内容，无需行级去重
+        if used_horizontal:
+            # 横向滚动拼接/小节号去重后的段已不重叠，无需行级去重
             kept_rows = list(all_rows)
         else:
             from rows import dedup_rows
