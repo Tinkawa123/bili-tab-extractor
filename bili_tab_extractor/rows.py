@@ -46,13 +46,22 @@ def _dense_fraction(gray: np.ndarray, y0: int, y1: int) -> float:
     return float((seg < 100).mean())
 
 
-def _skin_fraction(bgr: np.ndarray, y0: int, y1: int) -> float:
-    """段内肤色占比（0~1 比例）。演奏画面（手/脸）肤色占比高，
-    谱面墨迹/蓝色标记条不会被误判。"""
+def _skin_fraction(bgr: np.ndarray, y0: int, y1: int,
+                   thresholds: dict | None = None) -> float:
+    """段内肤色占比（0~1 比例）。演奏画面（手/脸）肤色占比高。
+
+    阈值自适应：若传入 profile.thresholds，用其中的 skin_sat/skin_v
+    （避免米色/暖色背景被误判成肤色）。
+    """
+    sat_min = 30
+    v_min = 60
+    if thresholds:
+        sat_min = int(thresholds.get("skin_sat", 30))
+        v_min = int(thresholds.get("skin_v", 60))
     seg = bgr[y0:y1 + 1]
     hsv = cv2.cvtColor(seg, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, (0, 30, 60), (25, 255, 255))
-    mask |= cv2.inRange(hsv, (165, 30, 60), (180, 255, 255))
+    mask = cv2.inRange(hsv, (0, sat_min, v_min), (25, 255, 255))
+    mask |= cv2.inRange(hsv, (165, sat_min, v_min), (180, 255, 255))
     # mask 是 0/255 的 uint8，必须换算成 0~1 比例
     return float((mask > 0).mean())
 
@@ -179,21 +188,29 @@ def _absorb_below(gray: np.ndarray, y1: int, h: int) -> int:
     return min(h - 1, y1 + ext)
 
 
-def split_crop_rows(img: np.ndarray) -> list[np.ndarray]:
+def split_crop_rows(img: np.ndarray,
+                    thresholds: dict | None = None) -> list[np.ndarray]:
     """把裁剪图按"内容行密度聚类"切成一行行谱（BGR -> 列表）。
 
     内容行 = 暗像素数 > CONTENT_ROW_DARK 的行；对内容行做相邻间距
     聚类，间隙 <= INNER_GAP 的行合并（行内五线谱/TAB 密排），
     间隙更大处即行间分界。
+    thresholds: profile 分析出的自适应阈值（肤色饱和度/亮度、墨迹阈值）。
     """
+    if thresholds:
+        dark_thr = int(thresholds.get("dark", 150))
+        sat_min = int(thresholds.get("skin_sat", 30))
+        v_min = int(thresholds.get("skin_v", 60))
+    else:
+        dark_thr, sat_min, v_min = 150, 30, 60
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
-    dark = (gray < 150).sum(axis=1)
+    dark = (gray < dark_thr).sum(axis=1)
 
-    # 每行肤色占比（演奏画面 = 肤色密集行，从内容行中排除）
+    # 每行肤色占比（演奏画面 = 肤色密集行，从内容行中排除；阈值自适应）
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    skin_mask = cv2.inRange(hsv, (0, 30, 60), (25, 255, 255))
-    skin_mask |= cv2.inRange(hsv, (165, 30, 60), (180, 255, 255))
+    skin_mask = cv2.inRange(hsv, (0, sat_min, v_min), (25, 255, 255))
+    skin_mask |= cv2.inRange(hsv, (165, sat_min, v_min), (180, 255, 255))
     skin_row_frac = (skin_mask > 0).sum(axis=1) / w
 
     # 内容行段（允许 2px 内的小断裂）；肤色密集行视为演奏画面，不参与
@@ -230,7 +247,7 @@ def split_crop_rows(img: np.ndarray) -> list[np.ndarray]:
             # 先排除演奏画面（密集暗色/肤色），任何合并都不做
             if _dense_fraction(gray, y0, y1) > 0.5:
                 break
-            if _skin_fraction(img, y0, y1) > SKIN_MERGE_FRAC:
+            if _skin_fraction(img, y0, y1, thresholds=thresholds) > SKIN_MERGE_FRAC:
                 break
             # ① 碎片合并：内容横向覆盖低的段（谱面被切碎的小块，
             #    如只剩行首小节号+一角和弦图）与相邻段合并，不受谱线限制
@@ -278,34 +295,41 @@ def _fp_dist(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def is_tab_row(row: np.ndarray, min_lines: int = 3,
-               span_frac: float = 0.6) -> bool:
+               span_frac: float = 0.6,
+               thresholds: dict | None = None) -> bool:
     """行片段是否像谱面（白底谱/歌词谱）。
 
-    谱面行特征：浅色(白)背景 + 稀疏暗内容。
-    两种形态都接受：
+    谱面行特征：亮背景 + 稀疏墨迹内容。
     - 谱线行：横贯弦线/五线谱线 >= min_lines
-    - 歌词/和弦名行：文字特征（垂直笔画多，如"16-21 小节只有歌词"的段落）
+    - 歌词/和弦名行：文字特征（垂直笔画多）
     演奏画面（肤色/复杂纹理）先被剔除。
-    判定：
-    - 白底：亮像素占比 > 0.35
-    - 内容稀疏：暗像素占比 < 0.35
-    - 肤色占比 < SKIN_ROW_FRAC
-    - 且（长线 >= min_lines 或 文本特征显著）
+
+    阈值自适应：传入 profile.analyze_profile 得到的 thresholds（bright/dark/skin_sat/skin_v），
+    不传时用纯白背景的经典默认值。
     """
     gray = cv2.cvtColor(row, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
-    # 亮背景：纯白(255) 到浅灰/米色(约 190) 都算（很多视频有滤镜/色调）
-    white_frac = float((gray > 190).mean())
-    dark_frac = float((gray < 100).mean())
-    if white_frac < 0.35 or dark_frac > 0.35:
+
+    # 自适应阈值（默认：纯白背景）
+    if thresholds:
+        bright = int(thresholds.get("bright", 190))
+        dark_thr = int(thresholds.get("dark", 100))
+        sat_min = int(thresholds.get("skin_sat", 30))
+        v_min = int(thresholds.get("skin_v", 60))
+    else:
+        bright, dark_thr, sat_min, v_min = 190, 100, 30, 60
+
+    bright_frac = float((gray > bright).mean())
+    dark_frac = float((gray < dark_thr).mean())
+    if bright_frac < 0.35 or dark_frac > 0.35:
         return False
-    # 肤色检查：演奏画面（手/脸）的强特征（按 0~1 比例）
+    # 肤色检查：演奏画面（手/脸）的强特征（按 0~1 比例，饱和度/亮度自适应）
     hsv = cv2.cvtColor(row, cv2.COLOR_BGR2HSV)
-    skin = cv2.inRange(hsv, (0, 30, 60), (25, 255, 255))
-    skin |= cv2.inRange(hsv, (165, 30, 60), (180, 255, 255))
+    skin = cv2.inRange(hsv, (0, sat_min, v_min), (25, 255, 255))
+    skin |= cv2.inRange(hsv, (165, sat_min, v_min), (180, 255, 255))
     if float((skin > 0).mean()) > SKIN_ROW_FRAC:
         return False
-    dark = gray < 150
+    dark = gray < dark_thr
     n_long = 0
     for y in range(h):
         cols = np.where(dark[y])[0]
@@ -326,12 +350,14 @@ def is_tab_row(row: np.ndarray, min_lines: int = 3,
     return False
 
 
-def dedup_rows(rows: list[tuple[np.ndarray, str, int]]) -> list[tuple[np.ndarray, str, int]]:
+def dedup_rows(rows: list[tuple[np.ndarray, str, int]],
+               thresholds: dict | None = None) -> list[tuple[np.ndarray, str, int]]:
     """行级全局去重。
 
     输入: [(行BGR图, 来源裁剪图路径, 行序号), ...]
     输出: 去重后的子集（同一行谱只保留第一次出现）。
     保留顺序 = 视频中第一次出现的顺序。
+    thresholds: profile 分析出的自适应阈值（传给 is_tab_row）。
 
     判定：指纹距离 < FP_DIST_THRESH 时再做像素级确认
     （content_changed：仅光标移动 = 重复丢弃；内容确实变化 = 保留），
@@ -348,7 +374,7 @@ def dedup_rows(rows: list[tuple[np.ndarray, str, int]]) -> list[tuple[np.ndarray
     dropped_notab = 0
 
     for row, src, idx in rows:
-        if not is_tab_row(row):
+        if not is_tab_row(row, thresholds=thresholds):
             dropped_notab += 1
             continue
         fp = row_fingerprint(row)

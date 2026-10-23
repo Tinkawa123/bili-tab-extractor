@@ -149,22 +149,29 @@ def detect_scroll_direction(images: list[np.ndarray], sample: int = 12) -> str:
     return "rows"
 
 
-def crop_screen_top(img: np.ndarray, max_frac: float = 0.4) -> np.ndarray:
+def crop_screen_top(img: np.ndarray, max_frac: float = 0.4,
+                    thresholds: dict | None = None) -> np.ndarray:
     """裁掉图片顶部的演奏画面残留。
 
-    判断依据（谱面是亮白底，演奏画面是深色/高饱和）：
-    - 行平均亮度 < 170（画面偏暗），或
-    - 行平均饱和度 > 60（画面彩色，谱面接近灰白）
+    判断依据（谱面是亮底，演奏画面是深色/高饱和）：
+    - 行平均亮度 < screen_bright（画面偏暗，默认 170），或
+    - 行平均饱和度 > screen_sat（画面彩色，谱面近灰白，默认 60）
+    thresholds 来自 profile.analyze_profile（自适应到该视频的亮度/色调）。
     max_frac 限制最多裁掉的比例，避免误裁。
     """
     h, w = img.shape[:2]
     if h < 40:
         return img
+    if thresholds:
+        screen_bright = int(thresholds.get("screen_bright", 170))
+        screen_sat = int(thresholds.get("screen_sat", 60))
+    else:
+        screen_bright, screen_sat = 170, 60
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     row_bright = gray.mean(axis=1)
     row_sat = hsv[:, :, 1].mean(axis=1)
-    is_screen = (row_bright < 170) | (row_sat > 60)
+    is_screen = (row_bright < screen_bright) | (row_sat > screen_sat)
     limit = int(h * max_frac)
     cut = 0
     for y in range(min(h, limit)):

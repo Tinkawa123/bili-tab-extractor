@@ -85,7 +85,8 @@ def crop_frames(frames: list[str], box: Box, crops_dir: str) -> list[str]:
     return paths
 
 
-def _process_horizontal(crop_imgs, api_key, work_dir, p, use_vlm=True) -> list[TabRow]:
+def _process_horizontal(crop_imgs, api_key, work_dir, p, use_vlm=True,
+                        thresholds: dict | None = None) -> list[TabRow]:
     """横向滚动谱带处理。
 
     优先：VLM 读每帧小节号 → 按小节号去重、按小节号排序（最可靠）。
@@ -97,7 +98,7 @@ def _process_horizontal(crop_imgs, api_key, work_dir, p, use_vlm=True) -> list[T
     cleaned = []
     for img in crop_imgs:
         try:
-            cleaned.append(crop_screen_top(img))
+            cleaned.append(crop_screen_top(img, thresholds=thresholds))
         except Exception:
             cleaned.append(img)
 
@@ -253,6 +254,19 @@ def process(url: str = None, video: str = None, title: str = None,
         # 检测谱面滚动类型：横向滚动 / 上滚 / 逐行（翻页）
         from stitch import (crop_screen_top, detect_scroll_direction,
                             estimate_shift, split_wide_image, stitch_horizontal)
+
+        # 谱面视觉特征分析 → 自适应阈值（不针对某个视频写死"白底=230"这类参数）
+        from profile import analyze_profile
+
+        prof = analyze_profile(crop_imgs)
+        thresholds = prof["thresholds"]
+        log.info(f"谱面特征: {'、'.join(prof['labels'])} | "
+                 f"背景灰度 {prof['bg_gray']}、墨迹灰度 {prof['ink_gray']}、"
+                 f"对比度 {prof['contrast']}、背景饱和度 {prof['bg_sat']}、"
+                 f"内容密度 {prof['content_frac']:.1%}")
+        log.info(f"自适应阈值: 亮区>{thresholds['bright']} 墨迹<{thresholds['dark']} "
+                 f"肤色饱和度>{thresholds['skin_sat']} 画面亮度<{thresholds['screen_bright']}")
+
         scroll_type = detect_scroll_direction(crop_imgs)
         log.info(f"谱面类型检测: {scroll_type}")
 
@@ -285,14 +299,14 @@ def process(url: str = None, video: str = None, title: str = None,
         if scroll_significant and screen_single_row:
             # 横向滚动谱带：VLM 读小节号去重（优先），像素拼接回退
             all_rows = _process_horizontal(
-                crop_imgs, api_key, work_dir, p, vlm_on_horizontal)
+                crop_imgs, api_key, work_dir, p, vlm_on_horizontal, thresholds)
             used_horizontal = True
         elif screen_single_row:
             # 整屏一行（静止/翻页/轻微滚动）：每帧一屏作为一行，后续像素去重
             p("正在整理整屏谱行…", 45)
             for ci, img in enumerate(crop_imgs):
                 try:
-                    img = crop_screen_top(img)
+                    img = crop_screen_top(img, thresholds=thresholds)
                 except Exception:
                     pass
                 all_rows.append(TabRow(img, ci * interval, f"screen-{ci}", ci))
@@ -307,7 +321,7 @@ def process(url: str = None, video: str = None, title: str = None,
                 if img is None:
                     continue
                 t = ci * interval
-                for ri, row in enumerate(split_crop_rows(img)):
+                for ri, row in enumerate(split_crop_rows(img, thresholds=thresholds)):
                     all_rows.append(TabRow(row, t, c, ri))
                 if ci % 20 == 0:
                     p(f"切分行片段 {ci}/{n_crops}…", 40 + 30 * ci / n_crops)
@@ -330,7 +344,8 @@ def process(url: str = None, video: str = None, title: str = None,
             from rows import dedup_rows
 
             # dedup_rows 输入是 (image, source, index)，输出 (image, source, index)
-            kept = dedup_rows([(r.image, r.source, r.index) for r in all_rows])
+            kept = dedup_rows([(r.image, r.source, r.index) for r in all_rows],
+                              thresholds=thresholds)
             kept_keys = {(k[1], k[2]) for k in kept}
             kept_rows = [r for r in all_rows if (r.source, r.index) in kept_keys]
             # 按时间排序（自动排序 = 按视频出现顺序）
