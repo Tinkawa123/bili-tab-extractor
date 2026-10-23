@@ -38,3 +38,13 @@ repo_marcelpanse/
 
 # VLM API Key 配置（敏感凭据，绝不提交）
 bili_tab_extractor/vlm_config.json
+
+# 测试产物（AI 输出、临时抽帧、诊断脚本）
+_ai_out/
+_vlm_rec_rows/
+_vlm_rec_work/
+_gui_full_work/
+_gui_work_*/
+_look/
+_runtime_tmp/
+check_*.py
