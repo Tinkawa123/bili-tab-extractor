@@ -16,6 +16,8 @@ import base64
 import json
 import os
 
+import requests  # yt-dlp 的既有依赖，打包零额外体积
+
 # DashScope OpenAI 兼容接口
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_MODEL = "qwen3-vl-plus"   # 也可用 qwen-vl-ocr（文字/数字识别更强）
@@ -37,16 +39,14 @@ def load_api_key() -> str | None:
     return None
 
 
-def _client(api_key: str | None = None):
-    """创建 OpenAI 兼容客户端（需 pip install openai）。"""
-    from openai import OpenAI
-
+def _require_key(api_key: str | None) -> str:
+    """校验并返回 API Key。"""
     key = api_key or load_api_key()
     if not key:
         raise RuntimeError(
             "未配置 API Key：请设置环境变量 DASHSCOPE_API_KEY，"
             "或在 bili_tab_extractor/vlm_config.json 写入 {\"api_key\": \"sk-...\"}")
-    return OpenAI(api_key=key, base_url=DASHSCOPE_BASE_URL)
+    return key
 
 
 def _image_to_data_url(path: str) -> str:
@@ -115,20 +115,38 @@ def _extract_json(text: str) -> dict:
 
 def _call(api_key: str | None, model: str, prompt: str, image_data_url: str,
           timeout: float) -> dict:
-    client = _client(api_key)
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": image_data_url}},
-            ],
-        }],
-        temperature=0.1,
+    """调用 DashScope OpenAI 兼容接口（requests，零额外依赖）。"""
+    key = _require_key(api_key)
+    resp = requests.post(
+        f"{DASHSCOPE_BASE_URL}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            }],
+            "temperature": 0.1,
+        },
         timeout=timeout,
     )
-    return _extract_json(resp.choices[0].message.content)
+    if resp.status_code == 401:
+        raise RuntimeError("API Key 无效或已过期（HTTP 401）")
+    if resp.status_code == 429:
+        raise RuntimeError("调用频率过高或额度用尽（HTTP 429）")
+    resp.raise_for_status()
+    data = resp.json()
+    try:
+        text = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"接口返回格式异常: {str(data)[:300]}") from e
+    return _extract_json(text)
 
 
 def _array_to_data_url(img) -> str:
