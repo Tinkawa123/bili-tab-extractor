@@ -4,9 +4,11 @@ pylibs/
 # 打包产物
 dist/
 dist_v2/
+dist_v3/
 dist_new/
 build/
 build_v2/
+build_v3/
 build_new/
 *.spec
 
