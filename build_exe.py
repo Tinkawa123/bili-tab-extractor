@@ -23,6 +23,8 @@ cmd = [
     "--onefile",           # 单文件 exe
     "--windowed",          # 无控制台（GUI）
     "--name", "视频扒谱工具",
+    # 解压到 exe 旁边的 _runtime_tmp（绕开系统 TEMP 被安全软件拦截的问题）
+    "--runtime-tmpdir", "_runtime_tmp",
     "--paths", PYLIBS,     # 收集 pylibs 中的包
     "--collect-all", "yt_dlp",
     "--collect-submodules", "yt_dlp",
