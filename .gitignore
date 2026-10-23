@@ -48,3 +48,17 @@ _gui_work_*/
 _look/
 _runtime_tmp/
 check_*.py
+
+# 测试运行临时工作目录（各种前缀变体，必须全覆盖）
+_final_work_*/
+_tt_work_*/
+_chk_*/
+_scr_work_*/
+_scr_out_*/
+_hz_*/
+_fuji_*/
+_nav_*/
+_type_work_*/
+_*_work_*/
+_*_work/
+
