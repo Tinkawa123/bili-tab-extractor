@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QProgressBar, QTextEdit,
     QListWidget, QListWidgetItem, QSplitter, QDialog, QScrollArea,
     QFileDialog, QMessageBox, QSpinBox, QDoubleSpinBox, QStyle,
-    QAbstractItemView, QScroller,
+    QAbstractItemView, QScroller, QGridLayout,
 )
 
 from pipeline import process, TabRow, PipelineResult
@@ -748,6 +748,14 @@ class ReviewWindow(QMainWindow):
         top.addWidget(self.read_bars_btn)
         lay.addLayout(top)
 
+        # 方块阵列导航：每行一个色块（绿=正常 / 黄=疑似重复 / 红=碎片），点击跳转
+        self.nav_container = QWidget()
+        self.nav_grid = QGridLayout(self.nav_container)
+        self.nav_grid.setContentsMargins(0, 0, 0, 0)
+        self.nav_grid.setSpacing(2)
+        self.nav_buttons: list[QPushButton] = []
+        lay.addWidget(self.nav_container)
+
         # 左右分栏：列表 + 预览
         splitter = QSplitter(Qt.Horizontal)
         lay.addWidget(splitter, 1)
@@ -759,10 +767,11 @@ class ReviewWindow(QMainWindow):
         self.list_widget.setDragDropMode(QListWidget.InternalMove)
         self.list_widget.setDefaultDropAction(Qt.MoveAction)
         self.list_widget.setSelectionMode(QListWidget.SingleSelection)
-        # 连续平滑滚动：像素级滚动 + 惯性
+        # 连续平滑滚动：像素级滚动（滚轮平滑）
+        # 注意：不要用 QScroller.grabGesture(LeftMouseButtonGesture)——它会抢占
+        # 滚动条和列表项的鼠标拖动，导致"拖滚动条"变成"拖谱条"。
         self.list_widget.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.list_widget.verticalScrollBar().setSingleStep(24)
-        QScroller.grabGesture(self.list_widget, QScroller.LeftMouseButtonGesture)
         self.list_widget.currentItemChanged.connect(self._on_select)
         self.list_widget.itemDoubleClicked.connect(self._on_double_click)
         splitter.addWidget(self.list_widget)
@@ -845,8 +854,51 @@ class ReviewWindow(QMainWindow):
             elif pix_dup:
                 item.setBackground(QColor("#fff3cd"))  # 浅黄：像素相似
             self.list_widget.addItem(item)
-        # 更新跳转范围
+        # 更新跳转范围与方块导航
         self.jump_spin.setRange(1, max(1, len(self.rows)))
+        self._refresh_nav_grid()
+
+    def _refresh_nav_grid(self):
+        """方块阵列导航：每行一个色块（绿=正常 / 黄=疑似重复 / 红=碎片），点击跳转。"""
+        # 清空旧方块
+        for btn in self.nav_buttons:
+            btn.setParent(None)
+            btn.deleteLater()
+        self.nav_buttons = []
+        cols = 24
+        for i in range(len(self.rows)):
+            frag = i in self._incomplete_rows
+            ai_dup = i in self._ai_dups
+            pix_dup = i in self._similar
+            if frag:
+                color = "#ef5350"      # 红：碎片/空谱
+                tip = f"第 {i + 1} 行：碎片/空谱"
+            elif ai_dup:
+                color = "#ffd54f"      # 黄：AI 判重复
+                tip = f"第 {i + 1} 行：疑似重复（AI）"
+            elif pix_dup:
+                color = "#ffecb3"      # 浅黄：像素相似
+                tip = f"第 {i + 1} 行：疑似重复（像素）"
+            else:
+                color = "#81c784"      # 绿：正常
+                tip = f"第 {i + 1} 行"
+            btn = QPushButton()
+            btn.setFixedSize(16, 16)
+            btn.setToolTip(tip)
+            btn.setStyleSheet(
+                f"QPushButton {{ background: {color}; border: 1px solid #999; border-radius: 2px; }}"
+                f"QPushButton:hover {{ border: 2px solid #333; }}")
+            btn.clicked.connect(lambda checked=False, idx=i: self._jump_to_index(idx))
+            self.nav_grid.addWidget(btn, i // cols, i % cols)
+            self.nav_buttons.append(btn)
+
+    def _jump_to_index(self, idx: int):
+        """跳到指定行（方块阵列/导航用）。"""
+        item = self.list_widget.item(idx)
+        if item:
+            self.list_widget.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+            self.list_widget.setCurrentItem(item)
+            self.jump_spin.setValue(idx + 1)
 
     def _jump_to(self):
         target = self.jump_spin.value() - 1  # 显示 1-based，内部 0-based

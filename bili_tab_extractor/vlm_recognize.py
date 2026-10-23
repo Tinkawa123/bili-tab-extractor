@@ -221,8 +221,9 @@ def cv_is_likely_fragment(img) -> bool:
 
     碎片特征：
     - 行很矮（<70px），或
-    - 内容稀薄（暗像素 <6%）—— 只有和弦图一角/几个孤立数字/被截断的谱线。
-    内容充足的行（纯 TAB、简谱+歌词等，暗像素 >=6%）由本函数救回。
+    - 内容极少（暗像素 <2%）—— 只有几个孤立数字/几乎空白。
+    注意：谱面本身就是"白底+少量墨迹"（暗像素 3~8% 很正常），
+    阈值不能太高，否则正常谱行会被误判成碎片。
     """
     import cv2
 
@@ -232,7 +233,7 @@ def cv_is_likely_fragment(img) -> bool:
     frac = float(dark.mean())
     if h < 70:
         return True
-    if frac < 0.06:
+    if frac < 0.02:
         return True
     return False
 
@@ -240,8 +241,9 @@ def cv_is_likely_fragment(img) -> bool:
 def find_incomplete_rows(analyses: dict[int, dict], rows=None) -> list[int]:
     """找出碎片/空谱行（VLM is_complete + CV 内容量双向校验）。
 
-    - VLM 判不完整：若 CV 显示内容充足（暗像素 >=6%、行高 >=70）则**救回**；
-    - VLM 判完整：若 CV 显示内容稀薄且不是歌词行，仍判为碎片（VLM 会漏判残缺和弦图行）。
+    - VLM 判不完整：若 CV 显示内容充足（行高 >=70 且暗像素 >=2%）则**救回**；
+    - VLM 判完整：若 CV 显示内容极少（<2%）且不是歌词行，仍判为碎片。
+    注意：谱面天然"白底+少墨迹"，CV 只做兜底，不能过严（否则正常谱成碎片）。
     """
     out = []
     for i, a in sorted(analyses.items()):
@@ -259,7 +261,7 @@ def find_incomplete_rows(analyses: dict[int, dict], rows=None) -> list[int]:
                 continue
             out.append(i)
         else:
-            # VLM 漏判兜底：内容稀薄且非歌词行 → 碎片
+            # VLM 判完整时，只有 CV 也确认"几乎空白"才兜底判碎片
             if rows is not None and cv_frag and not is_lyrics:
                 out.append(i)
     return out
