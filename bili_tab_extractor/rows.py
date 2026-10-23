@@ -80,6 +80,20 @@ def _has_staff_lines(gray: np.ndarray, y0: int, y1: int,
     return n >= min_lines
 
 
+def _content_coverage(gray: np.ndarray, y0: int, y1: int) -> float:
+    """段内内容的横向覆盖比例（内容列范围 / 总宽）。
+
+    碎片段（谱面被切成的小块，如只剩行首小节号+和弦图一角）覆盖低（<0.35）；
+    正常谱行/歌词行内容横跨整行，覆盖高（>0.5）。
+    """
+    seg = gray[y0:y1 + 1]
+    dark = seg < 150
+    cols = np.where(dark.any(axis=0))[0]
+    if len(cols) == 0:
+        return 0.0
+    return float((cols.max() - cols.min() + 1) / gray.shape[1])
+
+
 def _absorb_above(gray: np.ndarray, y0: int) -> int:
     """把行片段顶部向上扩展，吸收上方的"稀疏内容"（如和弦名/标记）。
 
@@ -178,19 +192,27 @@ def split_crop_rows(img: np.ndarray) -> list[np.ndarray]:
         y0, y1 = rows[i]
         while i + 1 < len(rows):
             ny0, ny1 = rows[i + 1]
-            if (y1 - y0 + 1) < MAX_PARTIAL and (ny0 - y1) <= MERGE_GAP:
-                # 演奏画面段（密集暗色 或 肤色密集）不参与合并，避免混入谱面行
-                if _dense_fraction(gray, y0, y1) > 0.5:
-                    break
-                if _skin_fraction(img, y0, y1) > SKIN_MERGE_FRAC:
-                    break
-                # 纯歌词段（无谱线）不与相邻段合并，避免歌词/谱线叠加
+            gap = ny0 - y1
+            # 先排除演奏画面（密集暗色/肤色），任何合并都不做
+            if _dense_fraction(gray, y0, y1) > 0.5:
+                break
+            if _skin_fraction(img, y0, y1) > SKIN_MERGE_FRAC:
+                break
+            # ① 碎片合并：内容横向覆盖低的段（谱面被切碎的小块，
+            #    如只剩行首小节号+一角和弦图）与相邻段合并，不受谱线限制
+            coverage = _content_coverage(gray, y0, y1)
+            if coverage < 0.35 and gap <= 60 and (y1 - y0 + 1) < 120:
+                y1 = ny1
+                i += 1
+                continue
+            # ② 半行合并：段矮 + 间隙小 + 含谱线 → 合并（五线谱+TAB 拼成一行）
+            if (y1 - y0 + 1) < MAX_PARTIAL and gap <= MERGE_GAP:
                 if not _has_staff_lines(gray, y0, y1):
                     break
                 y1 = ny1
                 i += 1
-            else:
-                break
+                continue
+            break
         merged_rows.append((y0, y1))
         i += 1
 

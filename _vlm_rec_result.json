@@ -1,0 +1,884 @@
+{
+ "analyses": {
+  "2": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 3,
+   "content": "纯六线谱TAB行，三小节，每小节四拍空弦（0）"
+  },
+  "0": {
+   "row_type": "chord_diagram",
+   "chords": [
+    "Dm",
+    "Am",
+    "B",
+    "C",
+    "F"
+   ],
+   "rhythm": "",
+   "lyrics": "",
+   "bar_numbers": [
+    1,
+    2
+   ],
+   "bar_count": 5,
+   "content": "Dm-Am-B-C-F 五个和弦图，小节号标在第1、2小节开头"
+  },
+  "1": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "",
+   "bar_numbers": [
+    1,
+    2,
+    3
+   ],
+   "bar_count": 3,
+   "content": "六线谱TAB，含拨弦数字、闷音（x）、滑音（P）与连音线，小节号为1、2、3"
+  },
+  "3": {
+   "row_type": "mixed",
+   "chords": [
+    "Dm",
+    "Am",
+    "B",
+    "C",
+    "F"
+   ],
+   "rhythm": "下 下 上 下 上 下 上（含闷音x与滑音H）",
+   "lyrics": "",
+   "bar_numbers": [
+    1,
+    2,
+    3
+   ],
+   "bar_count": 3,
+   "content": "Dm-Am-B-C-F 和弦图 + 六线谱TAB（含闷音x、滑音H、拨弦数字5/7/0/2及扫弦节奏）"
+  },
+  "4": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "",
+   "bar_numbers": [
+    1,
+    2
+   ],
+   "bar_count": 2,
+   "content": "两小节六线谱TAB，每小节4拍，第二小节末尾有拨弦指法0· 5 6 1 2 1"
+  },
+  "5": {
+   "row_type": "lyrics",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "拦路雨偏似",
+   "bar_numbers": [],
+   "bar_count": 0,
+   "content": "纯歌词行：'拦路雨偏似'"
+  },
+  "6": {
+   "row_type": "mixed",
+   "chords": [
+    "Dm",
+    "Am",
+    "B",
+    "C",
+    "F"
+   ],
+   "rhythm": "下 下上 上下上（含闷音x与滑音H）",
+   "lyrics": "",
+   "bar_numbers": [
+    1,
+    2,
+    3
+   ],
+   "bar_count": 3,
+   "content": "Dm-Am-B-C-F 和弦图 + 六线谱TAB（含闷音x、滑音H、拨弦数字5/7/0/2及节奏型）"
+  },
+  "7": {
+   "row_type": "mixed",
+   "chords": [
+    "Fadd9",
+    "C/E",
+    "Dm",
+    "Am"
+   ],
+   "rhythm": "下 下上 上下上",
+   "lyrics": "",
+   "bar_numbers": [
+    0,
+    1
+   ],
+   "bar_count": 4,
+   "content": "Fadd9-C/E-Dm-Am 和弦图 + 六线谱TAB（含闷音x与拨弦标记），小节号0和1"
+  },
+  "9": {
+   "row_type": "mixed",
+   "chords": [
+    "Bb",
+    "Fadd9",
+    "Gm7",
+    "C"
+   ],
+   "rhythm": "下 下上 上下上",
+   "lyrics": "",
+   "bar_numbers": [
+    1,
+    0,
+    3
+   ],
+   "bar_count": 4,
+   "content": "Bb-Fadd9-Gm7-C 和弦图 + 六线谱TAB（X表示闷音/扫弦，带节奏型）"
+  },
+  "8": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "雪花饮泣的你冻吗这风褛我给你磨到有襟花连调了职也",
+   "bar_numbers": [
+    2,
+    3,
+    2,
+    3,
+    5
+   ],
+   "bar_count": 5,
+   "content": "六线谱TAB（数字指法）+ 歌词，含小节号2、3、2、3、5"
+  },
+  "11": {
+   "row_type": "mixed",
+   "chords": [
+    "F",
+    "C/E",
+    "Dm",
+    "Am"
+   ],
+   "rhythm": "下 下上 上下上",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 4,
+   "content": "F-C/E-Dm-Am 和弦图 + 六线谱闷音扫弦（每小节四分音符节奏型）"
+  },
+  "10": {
+   "row_type": "mixed",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "不怕 怎么始终牵挂 苦 心选中 今天想车你回家 原谅我不再",
+   "bar_numbers": [
+    1,
+    2
+   ],
+   "bar_count": 2,
+   "content": "含小节号1、2的六线谱数字指法（21 66532 21 33321 | 2·2·2 2·1·62· 56121）与对应歌词混合行"
+  },
+  "12": {
+   "row_type": "mixed",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "送花伤口应要结疤 花瓣铺满 心里坟场才害怕 如若你非我",
+   "bar_numbers": [
+    1,
+    2
+   ],
+   "bar_count": 2,
+   "content": "含小节号1、2的六线谱TAB（指法数字）与对应歌词混合行，无和弦图"
+  },
+  "14": {
+   "row_type": "mixed",
+   "chords": [
+    "Bb",
+    "Fadd9",
+    "G",
+    "Csus4",
+    "F"
+   ],
+   "rhythm": "下 下上 上下上",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 5,
+   "content": "Bb-Fadd9-G-Csus4-F 和弦图 + 六线谱TAB（含闷音x与滑音H）"
+  },
+  "13": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "送花伤口应要结疤 花瓣铺满 心里坟场才害怕 如若你非我",
+   "bar_numbers": [
+    2,
+    3,
+    5,
+    6,
+    1,
+    2,
+    3,
+    5,
+    6
+   ],
+   "bar_count": 9,
+   "content": "六线谱TAB数字（2 3 5 5 3 2 1 等）配歌词，含小节号2、3、5、6、1等，无和弦图"
+  },
+  "15": {
+   "row_type": "mixed",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "不嫁彼此终必火化一生一世等一天需要代价谁都只得那",
+   "bar_numbers": [
+    2,
+    1,
+    6,
+    5,
+    3,
+    2,
+    2,
+    1,
+    3,
+    3,
+    3,
+    2,
+    1,
+    2,
+    2,
+    2,
+    2,
+    1,
+    6,
+    1,
+    1,
+    7,
+    7,
+    6
+   ],
+   "bar_count": 24,
+   "content": "含小节号数字（2,1,6...）与对应歌词的混合行，无和弦图或TAB"
+  },
+  "16": {
+   "row_type": "mixed",
+   "chords": [
+    "Bb",
+    "Fadd9",
+    "G",
+    "Csus4",
+    "F"
+   ],
+   "rhythm": "下 下上 上下上",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 5,
+   "content": "Bb-Fadd9-G-Csus4-F 和弦图 + 六线谱TAB（含闷音x与滑音H）"
+  },
+  "17": {
+   "row_type": "mixed",
+   "chords": [
+    "Dm",
+    "Am",
+    "B",
+    "C",
+    "F"
+   ],
+   "rhythm": "下 下上 上下上",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 5,
+   "content": "Dm-Am-B-C-F 和弦图 + 六线谱TAB（X表示闷音/扫弦，0为开放弦）"
+  },
+  "18": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "双手靠拥抱亦难任你拥有 要拥有 必先懂失去怎接受 曾沿着",
+   "bar_numbers": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "bar_count": 4,
+   "content": "六线谱TAB（数字拨弦）配歌词，含小节号0-3"
+  },
+  "19": {
+   "row_type": "mixed",
+   "chords": [
+    "Dm",
+    "Am",
+    "B",
+    "C",
+    "F"
+   ],
+   "rhythm": "下 下上 上下上 下 下上 上下上",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 5,
+   "content": "Dm-Am-B-C-F 和弦图 + 六线谱TAB（X表示闷音/扫弦，0为开放弦）"
+  },
+  "20": {
+   "row_type": "mixed",
+   "chords": [
+    "Dm",
+    "Gm9",
+    "G7",
+    "C"
+   ],
+   "rhythm": "下 下上 上下上",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 4,
+   "content": "Dm-Gm9-G7-C 和弦图 + 六线谱TAB（X表示闷音/扫弦，横线为持续音）"
+  },
+  "21": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "雪路浪游 为何为好事泪流 谁能凭 爱意要富士山私有 何不把",
+   "bar_numbers": [
+    1,
+    2
+   ],
+   "bar_count": 2,
+   "content": "六线谱TAB（数字指法）配歌词，含小节号1、2"
+  },
+  "22": {
+   "row_type": "mixed",
+   "chords": [
+    "Dm",
+    "Am",
+    "B",
+    "C",
+    "F"
+   ],
+   "rhythm": "下 下上 上下上（x 表示闷音，0 表示空弦）",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 5,
+   "content": "Dm-Am-B-C-F 和弦图 + 六线谱TAB（含闷音x与空弦0），共5小节"
+  },
+  "23": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "悲哀感觉假设是来自你虚构 试管里 找不到它 染污眼眸 前尘硬",
+   "bar_numbers": [
+    1,
+    2,
+    3
+   ],
+   "bar_count": 3,
+   "content": "六线谱TAB（数字指法）配歌词，含小节号1、2、3"
+  },
+  "24": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "悲哀感觉假设是来自你虚构 试管里 找不到它 染污眼眸 前尘硬",
+   "bar_numbers": [
+    1,
+    2,
+    3
+   ],
+   "bar_count": 3,
+   "content": "六线谱TAB（含数字指法与点符）配歌词，共3小节，小节号为1、2、3"
+  },
+  "26": {
+   "row_type": "other",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "此小节为2/4拍",
+   "bar_numbers": [],
+   "bar_count": 0,
+   "content": "文字说明：此小节为2/4拍"
+  },
+  "25": {
+   "row_type": "mixed",
+   "chords": [
+    "Dm",
+    "G",
+    "G7",
+    "bBadd9",
+    "C9"
+   ],
+   "rhythm": "下 下 上 下 上 下（含闷音x与滑音、连音记号）",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 5,
+   "content": "Dm-G-G7-bBadd9-C9 和弦图 + 六线谱TAB（含闷音x、滑音、连音及指法标记）"
+  },
+  "28": {
+   "row_type": "mixed",
+   "chords": [
+    "Fadd9",
+    "C",
+    "F",
+    "C/E"
+   ],
+   "rhythm": "下 下上 上下上",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 4,
+   "content": "Fadd9-C-F-C/E 和弦图 + 六线谱TAB（含闷音x与拨弦数字）+ 扫弦节奏型"
+  },
+  "27": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "化像石头 随缘地抛下便逃走 我绝不 罕有 往街里绕过一周 我便 化乌",
+   "bar_numbers": [
+    1,
+    2
+   ],
+   "bar_count": 2,
+   "content": "六线谱TAB（含指法数字）配歌词，共2小节，小节号为1、2"
+  },
+  "30": {
+   "row_type": "mixed",
+   "chords": [
+    "Fadd9",
+    "C",
+    "F",
+    "C/E"
+   ],
+   "rhythm": "下 下 上 下 上 下（含闷音x与连音线）",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 4,
+   "content": "Fadd9-C-F-C/E 四个和弦图 + 对应六线谱TAB（含闷音x、拨弦数字及连音线）"
+  },
+  "29": {
+   "row_type": "mixed",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "有情人节不要说穿只敢抚你发端这种姿态",
+   "bar_numbers": [
+    1
+   ],
+   "bar_count": 4,
+   "content": "小节号1起，含六线谱TAB（0· 5 6 1 2 1 | 2 3 3 3 3 2 1 | 2 3 3 3 3 2 1）与对应歌词"
+  },
+  "31": {
+   "row_type": "mixed",
+   "chords": [
+    "Dm",
+    "Am7",
+    "B",
+    "F"
+   ],
+   "rhythm": "下 下上 上下上",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 4,
+   "content": "Dm-Am7-B-F 和弦图 + 六线谱TAB（X表示闷音扫弦，每小节四拍）"
+  },
+  "33": {
+   "row_type": "mixed",
+   "chords": [
+    "G",
+    "C",
+    "F",
+    "C/E"
+   ],
+   "rhythm": "下 下上 上下上",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 4,
+   "content": "G-C-F-C/E 和弦图 + 六线谱TAB（X表示闷音/扫弦，带连音线）"
+  },
+  "32": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "可会令你更心酸 留在汽车里 取暖 应该怎么规劝 怎么可以",
+   "bar_numbers": [
+    2,
+    1,
+    6,
+    1,
+    2,
+    3,
+    3,
+    5,
+    6,
+    1,
+    2,
+    1,
+    2,
+    1,
+    5,
+    5,
+    3,
+    2,
+    3,
+    2,
+    1,
+    3,
+    3,
+    2,
+    1
+   ],
+   "bar_count": 25,
+   "content": "六线谱TAB（数字拨弦）+ 歌词，含连音线与小节号标注"
+  },
+  "34": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "将手腕忍痛划损 人活到几岁 算短失恋只有更短归家需要",
+   "bar_numbers": [
+    2,
+    5,
+    2,
+    6
+   ],
+   "bar_count": 4,
+   "content": "六线谱TAB（数字拨弦）+ 歌词，含小节号2、5、2、6"
+  },
+  "37": {
+   "row_type": "mixed",
+   "chords": [
+    "G",
+    "Csus4",
+    "F",
+    "Dm",
+    "Am"
+   ],
+   "rhythm": "下 下上 上下上 下 下 上 上 下",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 5,
+   "content": "G-Csus4-F-Dm-Am 和弦图 + 六线谱TAB（含闷音x、滑音H、拨弦标记与扫弦方向）"
+  },
+  "38": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "一早比一世遥远 谁都只得那双手靠拥抱亦难任你拥有要拥有",
+   "bar_numbers": [
+    2,
+    7
+   ],
+   "bar_count": 4,
+   "content": "六线谱TAB（含数字指法与连音线）配对应歌词，小节号为2和7"
+  },
+  "35": {
+   "row_type": "mixed",
+   "chords": [
+    "Dm",
+    "Am7",
+    "B♭",
+    "F"
+   ],
+   "rhythm": "下 下上 上下上",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 4,
+   "content": "Dm-Am7-B♭-F 和弦图 + 六线谱TAB（X表示闷音/扫弦，横线表示持续音）"
+  },
+  "36": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "几里路谁能预算 忘掉我跟你 恩怨樱 花开了几转 东京之旅",
+   "bar_numbers": [
+    2,
+    1,
+    6,
+    1,
+    2,
+    3,
+    5,
+    5,
+    6,
+    1,
+    2,
+    1,
+    2,
+    1,
+    6,
+    6,
+    5,
+    3,
+    2,
+    2,
+    1,
+    3,
+    3,
+    2,
+    1
+   ],
+   "bar_count": 25,
+   "content": "六线谱TAB（数字指法）+ 歌词，含小节号标注"
+  },
+  "40": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "必先懂失去怎接受 曾沿着雪路浪游 为何为好事泪流 谁能凭",
+   "bar_numbers": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "bar_count": 4,
+   "content": "六线谱TAB（含指法数字6·、5·、3·等）配对应中文歌词，小节号0-3"
+  },
+  "42": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "爱意要富士山私 有何不把 悲哀感觉假设是来自你虚构 试管里",
+   "bar_numbers": [
+    1,
+    2
+   ],
+   "bar_count": 2,
+   "content": "两小节六线谱TAB（含数字指法）配对应歌词，小节号为1、2"
+  },
+  "41": {
+   "row_type": "mixed",
+   "chords": [
+    "G7",
+    "C",
+    "Dm",
+    "Am"
+   ],
+   "rhythm": "下 上 下 下 上 下 上 下",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 4,
+   "content": "G7-C-Dm-Am 和弦图 + 六线谱TAB（含扫弦方向与闷音标记）"
+  },
+  "39": {
+   "row_type": "mixed",
+   "chords": [
+    "B",
+    "C",
+    "F",
+    "Dm",
+    "Gm7"
+   ],
+   "rhythm": "下 上 下 上 下 上 下 上",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 5,
+   "content": "B-C-F-Dm-Gm7 和弦图 + 六线谱TAB（T/A/B三行拨弦指示）+ 上下扫弦节奏"
+  },
+  "44": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "找不到它染污眼眸 前尘硬化像石头 随缘地抛下便逃走 我绝不",
+   "bar_numbers": [
+    1,
+    2,
+    3
+   ],
+   "bar_count": 3,
+   "content": "六线谱TAB（含拨弦数字）配歌词，共3小节，标注此小节为2/4拍"
+  },
+  "43": {
+   "row_type": "mixed",
+   "chords": [
+    "B",
+    "C",
+    "F",
+    "Dm",
+    "G",
+    "G7"
+   ],
+   "rhythm": "下 下 下 下 上 下 上 下 上 下 上 下 上 下 上 下 上 下 x",
+   "lyrics": "",
+   "bar_numbers": [],
+   "bar_count": 6,
+   "content": "B-C-F-Dm-G-G7 和弦图 + 六线谱TAB（含扫弦箭头与闷音标记）"
+  },
+  "46": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "罕有 往街里绕过一周 我便 化乌 有 谁 都只得那 有 你还嫌",
+   "bar_numbers": [
+    1,
+    1,
+    0
+   ],
+   "bar_count": 3,
+   "content": "六线谱TAB（数字拨弦）+ 对应歌词，含小节号1、1、0"
+  },
+  "45": {
+   "row_type": "mixed",
+   "chords": [
+    "bBadd9",
+    "C9",
+    "F",
+    "C",
+    "F"
+   ],
+   "rhythm": "下 下 上 下 上 下 上（含P.M.闷音与H击弦）",
+   "lyrics": "",
+   "bar_numbers": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "bar_count": 4,
+   "content": "bBadd9-C9-F-C-F 和弦图 + 六线谱TAB（含P.M.闷音、击弦H、滑音0-2）"
+  },
+  "47": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "找不到它染污眼眸 前尘硬化像石头 随缘地抛下便逃走 我绝不",
+   "bar_numbers": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "bar_count": 4,
+   "content": "六线谱TAB（含拨弦数字与连音线）配歌词，共4小节，标注2/4拍"
+  },
+  "48": {
+   "row_type": "mixed",
+   "chords": [
+    "bBadd9",
+    "C9",
+    "F",
+    "C",
+    "F"
+   ],
+   "rhythm": "下 下 上 下 上 下 上 下（含P.M.闷音与H击弦）",
+   "lyrics": "",
+   "bar_numbers": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "bar_count": 4,
+   "content": "bBadd9-C9-F-C-F 和弦图 + 六线谱TAB（含P.M.闷音、击弦H、滑音0-2）"
+  },
+  "50": {
+   "row_type": "tab",
+   "chords": [],
+   "rhythm": "",
+   "lyrics": "不够 我把这陈年风 袄 送赠 你 解 咒",
+   "bar_numbers": [],
+   "bar_count": 2,
+   "content": "六线谱TAB（6 5 5 6 5 3 5 3· 2· 1 6· 1· 2 | i - - - | 0 0 0 0 ||）配歌词"
+  },
+  "49": {
+   "row_type": "mixed",
+   "chords": [
+    "bBadd9",
+    "C9",
+    "Fmaj7",
+    "Fmaj7"
+   ],
+   "rhythm": "下 下上 上下上（含闷音x与滑音H）",
+   "lyrics": "",
+   "bar_numbers": [
+    1,
+    2
+   ],
+   "bar_count": 4,
+   "content": "bBadd9-C9-Fmaj7-Fmaj7 和弦图 + 六线谱TAB（含闷音、滑音、连音与拨弦数字）"
+  }
+ },
+ "groups": [
+  [
+   0,
+   4,
+   10,
+   12,
+   13,
+   21,
+   27,
+   32,
+   36,
+   42,
+   49
+  ],
+  [
+   1,
+   3,
+   6,
+   23,
+   24,
+   44,
+   45,
+   47,
+   48
+  ],
+  [
+   7,
+   46
+  ],
+  [
+   14,
+   16
+  ],
+  [
+   18,
+   40
+  ]
+ ],
+ "reasons": {
+  "0-4": "小节号相同 [1, 2]",
+  "0-10": "小节号相同 [1, 2]",
+  "0-12": "小节号相同 [1, 2]",
+  "0-21": "小节号相同 [1, 2]",
+  "0-27": "小节号相同 [1, 2]",
+  "0-42": "小节号相同 [1, 2]",
+  "0-49": "小节号相同 [1, 2]",
+  "1-3": "小节号相同 [1, 2, 3]",
+  "1-6": "小节号相同 [1, 2, 3]",
+  "1-23": "小节号相同 [1, 2, 3]",
+  "1-24": "小节号相同 [1, 2, 3]",
+  "1-44": "小节号相同 [1, 2, 3]",
+  "3-6": "小节号相同 [1, 2, 3]",
+  "3-23": "小节号相同 [1, 2, 3]",
+  "3-24": "小节号相同 [1, 2, 3]",
+  "3-44": "小节号相同 [1, 2, 3]",
+  "4-10": "小节号相同 [1, 2]",
+  "4-12": "小节号相同 [1, 2]",
+  "4-21": "小节号相同 [1, 2]",
+  "4-27": "小节号相同 [1, 2]",
+  "4-42": "小节号相同 [1, 2]",
+  "4-49": "小节号相同 [1, 2]",
+  "6-23": "小节号相同 [1, 2, 3]",
+  "6-24": "小节号相同 [1, 2, 3]",
+  "6-44": "小节号相同 [1, 2, 3]",
+  "7-46": "小节号相同 [0, 1]",
+  "10-12": "小节号相同 [1, 2]",
+  "10-21": "小节号相同 [1, 2]",
+  "10-27": "小节号相同 [1, 2]",
+  "10-42": "小节号相同 [1, 2]",
+  "10-49": "小节号相同 [1, 2]",
+  "12-13": "歌词相同「送花伤口应要结疤 花瓣铺」",
+  "12-21": "小节号相同 [1, 2]",
+  "12-27": "小节号相同 [1, 2]",
+  "12-42": "小节号相同 [1, 2]",
+  "12-49": "小节号相同 [1, 2]",
+  "13-32": "小节号相同 [1, 2, 3, 5, 6]",
+  "13-36": "小节号相同 [1, 2, 3, 5, 6]",
+  "14-16": "和弦与节奏相同 BB-FADD9-G-CSUS4-F",
+  "18-40": "小节号相同 [0, 1, 2, 3]",
+  "21-27": "小节号相同 [1, 2]",
+  "21-42": "小节号相同 [1, 2]",
+  "21-49": "小节号相同 [1, 2]",
+  "23-24": "小节号相同 [1, 2, 3]",
+  "23-44": "小节号相同 [1, 2, 3]",
+  "24-44": "小节号相同 [1, 2, 3]",
+  "27-42": "小节号相同 [1, 2]",
+  "27-49": "小节号相同 [1, 2]",
+  "32-36": "小节号相同 [1, 2, 3, 5, 6]",
+  "42-49": "小节号相同 [1, 2]",
+  "44-47": "歌词相同「找不到它染污眼眸 前尘硬」",
+  "45-47": "小节号相同 [1, 2, 3, 4]",
+  "45-48": "小节号相同 [1, 2, 3, 4]",
+  "47-48": "小节号相同 [1, 2, 3, 4]"
+ }
+}

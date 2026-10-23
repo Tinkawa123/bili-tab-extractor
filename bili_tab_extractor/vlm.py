@@ -30,6 +30,11 @@ def load_api_key() -> str | None:
     key = os.environ.get("DASHSCOPE_API_KEY")
     if key:
         return key.strip()
+    return load_config_key()
+
+
+def load_config_key() -> str | None:
+    """只从本地配置文件读取 Key（GUI 设置用）。"""
     if os.path.isfile(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, encoding="utf-8") as f:
@@ -37,6 +42,35 @@ def load_api_key() -> str | None:
         except Exception:
             pass
     return None
+
+
+def save_api_key(key: str, model: str | None = None) -> None:
+    """保存 API Key（及可选模型）到本地配置文件。"""
+    data = {}
+    if os.path.isfile(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+    data["api_key"] = key.strip()
+    if model:
+        data["model"] = model.strip()
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_model() -> str:
+    """读取配置的模型名（默认 qwen3-vl-plus）。"""
+    if os.path.isfile(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, encoding="utf-8") as f:
+                m = (json.load(f).get("model") or "").strip()
+                if m:
+                    return m
+        except Exception:
+            pass
+    return DEFAULT_MODEL
 
 
 def _require_key(api_key: str | None) -> str:

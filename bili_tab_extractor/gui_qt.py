@@ -34,8 +34,11 @@ from pipeline import process, TabRow, PipelineResult
 from stitch import make_pdf_from_rows, verify_and_clean_pdf
 from util import imread, imwrite, log
 from rows import row_fingerprint, _fp_dist
-from vlm import load_api_key
-from vlm_dedup import bar_label, find_duplicate_groups, read_bars_batch
+from vlm import (DEFAULT_MODEL, load_api_key, load_config_key, load_model,
+                 save_api_key)
+from vlm_dedup import bar_label
+from vlm_recognize import (analyze_rows, find_duplicate_groups,
+                           find_incomplete_rows)
 
 # 缩略图尺寸
 THUMB_W, THUMB_H = 480, 90
@@ -257,10 +260,12 @@ class MainWindow(QMainWindow):
         self.reopen_review_btn.setEnabled(False)
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.setEnabled(False)
+        self.settings_btn = QPushButton("AI 设置")
         btns.addWidget(self.start_btn)
         btns.addWidget(self.auto_btn)
         btns.addWidget(self.reopen_review_btn)
         btns.addWidget(self.cancel_btn)
+        btns.addWidget(self.settings_btn)
         btns.addStretch(1)
         lay.addLayout(btns)
 
@@ -268,6 +273,7 @@ class MainWindow(QMainWindow):
         self.auto_btn.clicked.connect(lambda: self._start(True))
         self.reopen_review_btn.clicked.connect(self._reopen_review)
         self.cancel_btn.clicked.connect(self._cancel)
+        self.settings_btn.clicked.connect(self._open_settings)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
@@ -276,11 +282,28 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel("就绪")
         lay.addWidget(self.status_label)
 
+        self.ai_status_label = QLabel(self._ai_status_text())
+        self.ai_status_label.setObjectName("hint")
+        lay.addWidget(self.ai_status_label)
+
         lay.addWidget(QLabel("处理日志:"))
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMinimumHeight(140)
         lay.addWidget(self.log_text)
+
+    def _ai_status_text(self) -> str:
+        key = load_api_key()
+        if key:
+            return f"AI：已配置 Key（{key[:6]}…{key[-4:]}），核验页可用 AI 识别去重"
+        return "AI：未配置 Key（点「AI 设置」填写，启用 AI 识别/去重）"
+
+    def _open_settings(self):
+        """AI 设置对话框：配置 API Key。"""
+        dlg = ApiSettingsDialog(self)
+        if dlg.exec() == QDialog.Accepted:
+            self.ai_status_label.setText(self._ai_status_text())
+            self._log("AI 设置已更新")
 
     def _log(self, msg: str):
         self.log_text.append(msg)
@@ -412,11 +435,87 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+class ApiSettingsDialog(QDialog):
+    """AI 设置对话框：配置 DashScope API Key 与模型。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("AI 设置")
+        self.resize(560, 260)
+        lay = QVBoxLayout(self)
+
+        lay.addWidget(QLabel("DashScope API Key（阿里云百炼）："))
+        self.key_edit = QLineEdit()
+        self.key_edit.setEchoMode(QLineEdit.Password)
+        self.key_edit.setPlaceholderText("sk-...")
+        old = load_config_key() or ""
+        self.key_edit.setText(old)
+        lay.addWidget(self.key_edit)
+
+        lay.addWidget(QLabel("模型（默认 qwen3-vl-plus，视觉能力更强）："))
+        self.model_edit = QLineEdit()
+        self.model_edit.setText(load_model())
+        lay.addWidget(self.model_edit)
+
+        hint = QLabel(
+            "Key 保存在 bili_tab_extractor/vlm_config.json（已 gitignore，不会上传）。\n"
+            "申请地址：https://bailian.console.aliyun.com → API-KEY 管理")
+        hint.setObjectName("hint")
+        lay.addWidget(hint)
+
+        self.test_label = QLabel("")
+        lay.addWidget(self.test_label)
+
+        btns = QHBoxLayout()
+        self.test_btn = QPushButton("测试连接")
+        self.test_btn.clicked.connect(self._test)
+        self.save_btn = QPushButton("保存")
+        self.save_btn.setObjectName("primary")
+        self.save_btn.clicked.connect(self._save)
+        cancel = QPushButton("取消")
+        cancel.clicked.connect(self.reject)
+        btns.addStretch(1)
+        btns.addWidget(self.test_btn)
+        btns.addWidget(cancel)
+        btns.addWidget(self.save_btn)
+        lay.addLayout(btns)
+
+    def _save(self):
+        key = self.key_edit.text().strip()
+        if not key:
+            QMessageBox.warning(self, "提示", "请填写 API Key")
+            return
+        save_api_key(key, self.model_edit.text().strip() or None)
+        self.accept()
+
+    def _test(self):
+        key = self.key_edit.text().strip()
+        if not key:
+            self.test_label.setText("请先填写 API Key")
+            return
+        self.test_label.setText("测试中…")
+        self.test_btn.setEnabled(False)
+        try:
+            import requests
+            from vlm import DASHSCOPE_BASE_URL
+            r = requests.get(f"{DASHSCOPE_BASE_URL}/models",
+                             headers={"Authorization": f"Bearer {key}"}, timeout=20)
+            if r.status_code == 200:
+                n = len(r.json().get("data", []))
+                self.test_label.setText(f"连接成功（可用模型 {n} 个）")
+            else:
+                self.test_label.setText(f"失败：HTTP {r.status_code}（Key 无效或额度问题）")
+        except Exception as e:
+            self.test_label.setText(f"失败：{e}")
+        finally:
+            self.test_btn.setEnabled(True)
+
+
 class BarReader(QThread):
-    """后台批量读取小节号（VLM），带进度。"""
+    """后台用 VLM 分析所有行（识别内容 + 碎片判定 + 语义去重依据），带进度。"""
 
     progress = Signal(int, int)   # (done, total)
-    done = Signal(object)         # {row_index: [bars]}（Python dict 用 object 传）
+    done = Signal(object)         # {row_index: 分析结果dict}
     error = Signal(str)
 
     def __init__(self, rows, cache_path, api_key=None, parent=None):
@@ -427,12 +526,14 @@ class BarReader(QThread):
 
     def run(self):
         try:
-            results = read_bars_batch(
+            results = analyze_rows(
                 self.rows, api_key=self.api_key, cache_path=self.cache_path,
-                progress=lambda d, t, i, bars: self.progress.emit(d, t))
-            # 写回各行的 bars 字段（供渲染/去重判断）
-            for i, bars in results.items():
-                self.rows[i].bars = bars
+                progress=lambda d, t: self.progress.emit(d, t),
+                max_workers=4)
+            # 写回各行的 bars 字段（兼容旧渲染）
+            for i, a in results.items():
+                if i < len(self.rows):
+                    self.rows[i].bars = list(a.get("bar_numbers") or [])
             self.done.emit(results)
         except SystemExit as e:
             self.error.emit(f"处理被终止: {e}")
@@ -494,10 +595,15 @@ class ReviewWindow(QMainWindow):
         self._thumbs: dict[int, QPixmap] = {}
         self._similar: dict[int, list[int]] = {}  # 原始索引 -> 相似行索引列表
         self._compute_similar()
-        # VLM 小节号去重
+        # VLM 分析状态
         self._bar_thread: BarReader | None = None
-        self._bar_dups: dict[int, list[int]] = {}   # 行索引 -> 同小节号的其它行
+        self._bar_dups: dict[int, list[int]] = {}   # 兼容旧字段
         self._bar_done = False
+        self._ai_analyses: dict[int, dict] = {}     # row_idx -> 分析结果
+        self._ai_done = False
+        self._ai_dups: dict[int, list[int]] = {}    # row_idx -> 重复的其它行
+        self._ai_dup_groups: list[list[int]] = []
+        self._incomplete_rows: set[int] = set()     # 碎片/空谱行
 
         self.setWindowTitle(f"人工核验 - {result.title}")
         self.resize(1250, 800)
@@ -505,57 +611,61 @@ class ReviewWindow(QMainWindow):
         self._build_ui()
         self._render_list()
 
-    # ---------- VLM 小节号去重 ----------
-    def _on_read_bars(self):
-        """后台批量读小节号，找出同一小节号的重复行。"""
+    # ---------- AI 识别 + 去重（VLM 主导） ----------
+    def _on_ai_analyze(self):
+        """后台用 VLM 分析所有行：识别内容、标记碎片/空谱、找出语义重复。"""
         if self._bar_thread and self._bar_thread.isRunning():
             return
         key = load_api_key()
         if not key:
             QMessageBox.warning(
                 self, "未配置 API Key",
-                "请先设置环境变量 DASHSCOPE_API_KEY，或在 "
-                "bili_tab_extractor/vlm_config.json 写入 {\"api_key\": \"sk-...\"}")
+                "请先在主窗口点「AI 设置」填写 API Key。")
             return
         cache_path = os.path.join(
-            self.main_win.work_dir or os.getcwd(), "vlm_cache.json")
-        self.status_top.setText("AI 读取小节号中…")
+            self.main_win.work_dir or os.getcwd(), "vlm_analysis_cache.json")
+        self.status_top.setText("AI 分析中…")
+        self.read_bars_btn.setEnabled(False)
         self._bar_thread = BarReader(self.rows, cache_path, api_key=key, parent=self)
-        self._bar_thread.progress.connect(self._on_bar_progress)
-        self._bar_thread.done.connect(self._on_bar_done)
-        self._bar_thread.error.connect(self._on_bar_error)
+        self._bar_thread.progress.connect(self._on_ai_progress)
+        self._bar_thread.done.connect(self._on_ai_done)
+        self._bar_thread.error.connect(self._on_ai_error)
         self._bar_thread.start()
 
-    def _on_bar_progress(self, done: int, total: int):
-        self.status_top.setText(f"AI 读取小节号中… {done}/{total}")
+    def _on_ai_progress(self, done: int, total: int):
+        self.status_top.setText(f"AI 分析中… {done}/{total}")
 
-    def _on_bar_error(self, err: str):
-        self.status_top.setText("AI 读取失败")
-        QMessageBox.critical(self, "AI 读取失败", err)
+    def _on_ai_error(self, err: str):
+        self.status_top.setText("AI 分析失败")
+        self.read_bars_btn.setEnabled(True)
+        QMessageBox.critical(self, "AI 分析失败", err)
 
-    def _on_bar_done(self, results: dict):
-        self._bar_done = True
-        # 按小节号找重复行
-        self._bar_dups = {}
-        groups = {}
-        for i, row in enumerate(self.rows):
-            for b in set(row.bars or []):
-                groups.setdefault(b, []).append(i)
-        dup_groups = [sorted(v) for v in groups.values() if len(v) >= 2]
-        for g in dup_groups:
+    def _on_ai_done(self, analyses: dict):
+        """AI 分析完成：标记碎片行、重复组，显示识别内容。"""
+        self._ai_analyses = analyses
+        self._ai_done = True
+        self.read_bars_btn.setEnabled(True)
+
+        # 碎片/空谱行（VLM 判定 + CV 复核）
+        self._incomplete_rows = set(find_incomplete_rows(analyses, self.rows))
+        # 语义重复组
+        self._ai_dup_groups = find_duplicate_groups(analyses)
+        self._ai_dups = {}
+        for g in self._ai_dup_groups:
             for i in g:
-                self._bar_dups.setdefault(i, [x for x in g if x != i])
-        # 合并重复组（同一批行共享多小节号）
-        merged = []
-        for g in dup_groups:
-            if not any(set(g) & set(m) for m in merged):
-                merged.append(g)
-        self._bar_dup_groups = merged
-        n_bar_rows = sum(1 for r in self.rows if r.bars)
+                self._ai_dups.setdefault(i, [x for x in g if x != i])
+
+        n_frag = len(self._incomplete_rows)
+        n_dup = len(self._ai_dup_groups)
         self.status_top.setText(
-            f"AI 检测完成：{n_bar_rows} 行识别出小节号，"
-            f"发现 {len(merged)} 组疑似重复小节")
+            f"AI 分析完成：{len(analyses)} 行｜碎片/空谱 {n_frag} 行｜疑似重复 {n_dup} 组")
+        self._log(f"AI 分析完成：碎片 {n_frag} 行，重复 {n_dup} 组")
+        self.clean_btn.setEnabled(True)
         self._render_list()
+
+    def _on_read_bars(self):
+        # 兼容旧调用：统一走 AI 分析
+        self._on_ai_analyze()
 
     def _compute_similar(self):
         """检测大致相同的行（指纹距离 < 阈值 且 像素差异小），标黄供人工核验。"""
@@ -632,8 +742,8 @@ class ReviewWindow(QMainWindow):
         self.next_sim_btn = QPushButton("下一处疑似重复")
         self.next_sim_btn.clicked.connect(self._next_similar)
         top.addWidget(self.next_sim_btn)
-        self.read_bars_btn = QPushButton("AI 读小节号去重")
-        self.read_bars_btn.clicked.connect(self._on_read_bars)
+        self.read_bars_btn = QPushButton("AI 识别 + 去重")
+        self.read_bars_btn.clicked.connect(self._on_ai_analyze)
         top.addWidget(self.read_bars_btn)
         lay.addLayout(top)
 
@@ -672,6 +782,10 @@ class ReviewWindow(QMainWindow):
         self.del_btn = QPushButton("删除选中行")
         self.del_btn.clicked.connect(self._delete_selected)
         ops.addWidget(self.del_btn)
+        self.clean_btn = QPushButton("按 AI 建议清理（删碎片+去重）")
+        self.clean_btn.setEnabled(False)
+        self.clean_btn.clicked.connect(self._on_clean)
+        ops.addWidget(self.clean_btn)
         self.recover_btn = QPushButton("找回被丢弃的行…")
         self.recover_btn.clicked.connect(self._recover)
         ops.addWidget(self.recover_btn)
@@ -699,21 +813,34 @@ class ReviewWindow(QMainWindow):
             pm = bgr_to_pixmap(row.image, THUMB_W, THUMB_H)
             self._thumbs[i] = pm
             text = f"第 {i + 1} 行   {row.image.shape[1]}×{row.image.shape[0]}   t={row.time:.0f}s"
-            if row.bars:
+            # AI 识别内容摘要
+            a = self._ai_analyses.get(i) if self._ai_done else None
+            if a:
+                if a.get("chords"):
+                    text += "   " + "-".join(a["chords"][:4])
+                if a.get("lyrics"):
+                    text += f"   「{a['lyrics'][:10]}」"
+            elif row.bars:
                 text += f"   {bar_label(row.bars)}"
-            # 疑似重复提示：VLM 小节号重复 或 像素相似
-            bar_dup = i in self._bar_dups
+            # 标记优先级：碎片/空谱（红） > AI 重复（橙） > 像素相似（浅黄）
+            frag = i in self._incomplete_rows
+            ai_dup = i in self._ai_dups
             pix_dup = i in self._similar
-            if bar_dup:
-                text += "   ⚠ 小节重复"
+            if frag:
+                text += "   ✖ 碎片/空谱"
+            elif ai_dup:
+                text += "   ⚠ AI 判重复"
             elif pix_dup:
                 text += "   ⚠ 疑似重复"
             item = QListWidgetItem(QIcon(pm), text)
             item.setData(Qt.UserRole, i)
             item.setSizeHint(QSize(THUMB_W, THUMB_H + 24))
-            if bar_dup:
-                item.setBackground(QColor("#ffe0b2"))  # 橙色：小节号重复（更确凿）
-                item.setToolTip("VLM 识别出与其它行相同的小节号，疑似重复")
+            if frag:
+                item.setBackground(QColor("#ffcdd2"))  # 浅红：碎片/空谱
+                item.setToolTip("AI 判定为碎片/空谱（内容不完整），建议删除")
+            elif ai_dup:
+                item.setBackground(QColor("#ffe0b2"))  # 橙色：AI 语义判重
+                item.setToolTip("AI 识别内容与其它行重复")
             elif pix_dup:
                 item.setBackground(QColor("#fff3cd"))  # 浅黄：像素相似
             self.list_widget.addItem(item)
@@ -728,8 +855,8 @@ class ReviewWindow(QMainWindow):
             self.list_widget.setCurrentItem(item)
 
     def _next_similar(self):
-        """跳到下一处疑似重复（像素相似 + 小节号重复，循环）。"""
-        flagged = set(self._similar) | set(self._bar_dups)
+        """跳到下一处问题行（像素相似 / AI 判重 / 碎片，循环）。"""
+        flagged = set(self._similar) | set(self._ai_dups) | self._incomplete_rows
         if not flagged:
             return
         cur = self.list_widget.currentRow()
@@ -771,19 +898,63 @@ class ReviewWindow(QMainWindow):
         dlg = ZoomDialog(row.image.copy(), f"第 {orig + 1} 行预览（t={row.time:.0f}s）", self)
         dlg.exec()
 
-    def _recalc_bar_dups(self):
-        """按当前行的 bars 字段重算小节号重复（rows 变化后调用）。"""
-        self._bar_dups = {}
-        if not self._bar_done:
+    def _on_clean(self):
+        """按 AI 建议清理：删除碎片/空谱行 + 重复组只留第一行。"""
+        if not self._ai_done:
             return
-        groups = {}
-        for i, row in enumerate(self.rows):
-            for b in set(row.bars or []):
-                groups.setdefault(b, []).append(i)
-        for g in groups.values():
-            if len(g) >= 2:
-                for i in g:
-                    self._bar_dups.setdefault(i, [x for x in g if x != i])
+        to_del = set(self._incomplete_rows)
+        for g in self._ai_dup_groups:
+            # 保留组内第一个（按当前列表顺序），其余删除
+            for i in g[1:]:
+                to_del.add(i)
+        if not to_del:
+            QMessageBox.information(self, "清理", "AI 没有发现需要清理的行")
+            return
+        n_frag = len(self._incomplete_rows)
+        n_dup = len(to_del) - n_frag
+        reply = QMessageBox.question(
+            self, "按 AI 建议清理",
+            f"将删除：\n"
+            f"· 碎片/空谱行 {n_frag} 行\n"
+            f"· 重复行 {n_dup} 行（每组保留第一行）\n\n"
+            f"共删除 {len(to_del)} 行，保留 {len(self.rows) - len(to_del)} 行。\n"
+            f"确认清理？（清理后可用「找回被丢弃的行」恢复）",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        # 删除前把被删的行存入"丢弃池"（供找回）
+        for i in sorted(to_del):
+            if 0 <= i < len(self.rows):
+                self.result.all_rows.append(self.rows[i])
+        self.rows = [r for i, r in enumerate(self.rows) if i not in to_del]
+        # 索引变化，清空 AI 状态（重新分析会命中缓存）
+        self._ai_analyses = {}
+        self._ai_dups = {}
+        self._ai_dup_groups = []
+        self._incomplete_rows = set()
+        self._ai_done = False
+        self.clean_btn.setEnabled(False)
+        self._compute_similar()
+        self._render_list()
+        self.status_top.setText(f"已清理，剩 {len(self.rows)} 行")
+        self._log(f"按 AI 建议清理完成：剩 {len(self.rows)} 行")
+
+    def _recalc_bar_dups(self):
+        """rows 变化后，AI 分析结果的索引失效 → 清空 AI 状态（可重新分析，命中缓存）。"""
+        self._bar_dups = {}
+        if not self._ai_done:
+            return
+        self._ai_analyses = {}
+        self._ai_dups = {}
+        self._ai_dup_groups = []
+        self._incomplete_rows = set()
+        self._ai_done = False
+        self.clean_btn.setEnabled(False)
+        self.status_top.setText("行已变更，AI 结果已重置（可重新点「AI 识别 + 去重」）")
+
+    def _log(self, msg: str):
+        """转发到主窗口日志。"""
+        self.main_win._log(msg)
 
     def _delete_selected(self):
         item = self.list_widget.currentItem()
