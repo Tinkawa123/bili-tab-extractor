@@ -3,7 +3,11 @@ pylibs/
 
 # 打包产物
 dist/
+dist_v2/
+dist_new/
 build/
+build_v2/
+build_new/
 *.spec
 
 # 输出结果
