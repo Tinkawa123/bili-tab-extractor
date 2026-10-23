@@ -82,6 +82,8 @@ def main() -> None:
 
     work = tempfile.mkdtemp(prefix="bili_tab_", dir=os.getcwd())
     try:
+        from vlm import load_api_key
+
         result = process(
             url=args.url,
             video=args.video,
@@ -92,6 +94,7 @@ def main() -> None:
             cookies=args.cookies,
             box_arg=args.box,
             work_dir=work,
+            api_key=load_api_key(),  # 横向滚动谱面用 VLM 读小节号
         )
         title = result.title
         kept_rows = result.kept_rows

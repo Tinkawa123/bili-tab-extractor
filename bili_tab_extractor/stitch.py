@@ -102,6 +102,192 @@ def stitch_scrolling(crops: list[str], shifts: list[float],
     return segments
 
 
+def estimate_shift(a: np.ndarray, b: np.ndarray) -> tuple[float, float, float]:
+    """相位相关估计 b 相对 a 的位移 (dx, dy) 与响应强度。
+
+    返回 (dx, dy, response)：dx>0 表示内容向右移动，dy>0 表示向下移动。
+    """
+    ga = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gb = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    # 加 Hann 窗减少边缘效应
+    h, w = ga.shape
+    win = np.outer(np.hanning(h), np.hanning(w)).astype(np.float32)
+    ga = (ga - ga.mean()) * win
+    gb = (gb - gb.mean()) * win
+    (dx, dy), response = cv2.phaseCorrelate(ga, gb)
+    return float(dx), float(dy), float(response)
+
+
+def detect_scroll_direction(images: list[np.ndarray], sample: int = 12) -> str:
+    """判断视频谱面滚动类型：'horizontal'（横向滚动）/ 'vertical'（上滚）/ 'rows'（逐行/翻页）。
+
+    采样比较相邻帧的位移方向：横向位移显著大于纵向 → horizontal；
+    纵向位移显著 → vertical；都没有明显位移（整行切换）→ rows。
+    """
+    if len(images) < 3:
+        return "rows"
+    step = max(1, len(images) // sample)
+    picks = images[::step][:sample]
+    dxs, dys = [], []
+    for i in range(1, len(picks)):
+        try:
+            dx, dy, resp = estimate_shift(picks[i - 1], picks[i])
+        except Exception:
+            continue
+        if resp < 0.02:  # 相关性太低（内容完全变化）→ 忽略
+            continue
+        dxs.append(abs(dx))
+        dys.append(abs(dy))
+    if not dxs:
+        return "rows"
+    med_dx = float(np.median(dxs))
+    med_dy = float(np.median(dys))
+    if med_dx >= 8 and med_dx > med_dy * 2:
+        return "horizontal"
+    if med_dy >= 8 and med_dy > med_dx * 2:
+        return "vertical"
+    return "rows"
+
+
+def crop_screen_top(img: np.ndarray, max_frac: float = 0.4) -> np.ndarray:
+    """裁掉图片顶部的演奏画面残留。
+
+    判断依据（谱面是亮白底，演奏画面是深色/高饱和）：
+    - 行平均亮度 < 170（画面偏暗），或
+    - 行平均饱和度 > 60（画面彩色，谱面接近灰白）
+    max_frac 限制最多裁掉的比例，避免误裁。
+    """
+    h, w = img.shape[:2]
+    if h < 40:
+        return img
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    row_bright = gray.mean(axis=1)
+    row_sat = hsv[:, :, 1].mean(axis=1)
+    is_screen = (row_bright < 170) | (row_sat > 60)
+    limit = int(h * max_frac)
+    cut = 0
+    for y in range(min(h, limit)):
+        if is_screen[y]:
+            cut = y + 1
+        elif cut > 0 and y > cut + 5:
+            break
+    if cut >= 5:
+        return img[cut:]
+    return img
+
+
+def stitch_horizontal(images: list[np.ndarray], shifts: list[float],
+                      min_shift: float = 20.0,
+                      max_seg_width: int = 60000) -> list[np.ndarray]:
+    """横向滚动型谱面拼接（支持回滚：按位移方向分段拼接）。
+
+    images: 各帧裁剪图（同尺寸）
+    shifts: shifts[i] = 第 i 帧相对第 i-1 帧的水平位移（>0 内容右移）
+    返回拼接段列表（每段是一张横向长图）；无有效位移时返回 []。
+    """
+    if len(images) < 2:
+        return []
+    h, w = images[0].shape[:2]
+
+    # 清理位移：无位移帧跳过；混叠修正（|dx| 接近整幅宽度时取等价短位移）
+    valid: list[float | None] = [None]
+    for i in range(1, len(images)):
+        s = shifts[i] if i < len(shifts) else 0.0
+        if abs(s) < min_shift:
+            valid.append(None)
+            continue
+        if abs(s) > w * 0.6:
+            alt = s - np.sign(s) * w
+            if abs(alt) < abs(s):
+                s = alt
+        valid.append(float(s))
+
+    sig = [(i, s) for i, s in enumerate(valid) if s is not None]
+    if len(sig) < 2:
+        return []
+
+    # 按位移方向分段（方向反转 = 回滚，新起一段）
+    segments: list[tuple[float, list[int]]] = []
+    cur: list[int] = [0]
+    cur_sign: float | None = None
+    for idx, s in sig:
+        sign = float(np.sign(s))
+        if cur_sign is None or sign == cur_sign:
+            cur.append(idx)
+            cur_sign = sign
+        else:
+            segments.append((cur_sign, cur))
+            cur = [idx]
+            cur_sign = sign
+    if cur:
+        segments.append((cur_sign or 0.0, cur))
+
+    out: list[np.ndarray] = []
+    for sign, frames in segments:
+        frames = sorted(set(frames))
+        if len(frames) < 2:
+            continue
+        # 段内累计绝对偏移
+        offsets = {frames[0]: 0.0}
+        acc = 0.0
+        for k in range(1, len(frames)):
+            for j in range(frames[k - 1] + 1, frames[k] + 1):
+                sv = valid[j]
+                if sv is not None:
+                    acc += sv
+            offsets[frames[k]] = acc
+        xs = list(offsets.values())
+        base = -min(xs)
+        total_w = int(max(xs) - min(xs)) + w
+        if total_w > max_seg_width:
+            log.warn(f"横向段过长（{total_w}px），跳过")
+            continue
+        canvas = np.full((h, total_w, 3), 255, dtype=np.uint8)
+        for i in frames:
+            x = int(round(base + offsets[i]))
+            x2 = min(total_w, x + w)
+            if 0 <= x < total_w and x2 > x:
+                canvas[:, x:x2] = images[i][:, :x2 - x]
+        out.append(canvas)
+
+    if out:
+        log.success(f"横向拼接完成：{len(segments)} 段 → {len(out)} 张长图")
+    return out
+
+
+def split_wide_image(img: np.ndarray, max_section_w: int = 2400,
+                     blank_ratio: float = 0.02) -> list[np.ndarray]:
+    """把超宽长图按"小节间隙"（空白竖列）切段，避免切断谱线。
+
+    max_section_w: 每段最大宽度（超过则强制切）
+    blank_ratio: 空白列判定（该列内容像素占比低于此值算空白）
+    """
+    h, w = img.shape[:2]
+    if w <= max_section_w:
+        return [img]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    content = (gray < 150).mean(axis=0)  # 每列内容占比
+    sections = []
+    start = 0
+    while start < w:
+        end = min(w, start + max_section_w)
+        if end >= w:
+            sections.append(img[:, start:end])
+            break
+        # 在 [start+max_section_w*0.6, end] 区间找最空的列作为切点
+        lo = start + int(max_section_w * 0.6)
+        best_x, best_score = end, 1e9
+        for x in range(lo, end):
+            score = content[x]
+            if score < blank_ratio and score < best_score:
+                best_score = score
+                best_x = x
+        sections.append(img[:, start:best_x])
+        start = best_x
+    return [s for s in sections if s.shape[1] > 20]
+
+
 def split_long_image(img: np.ndarray, max_inner_gap: int = 25,
                      dark_thresh: int = 30) -> list[np.ndarray]:
     """把长图按"内容行间距聚类"切分为一行行谱面（BGR -> 列表）。
@@ -258,7 +444,8 @@ def verify_and_clean_pdf(out_path: str, skin_thresh: float = 0.05) -> int:
                     hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
                     skin = cv2.inRange(hsv, (0, 30, 60), (25, 255, 255))
                     skin |= cv2.inRange(hsv, (165, 30, 60), (180, 255, 255))
-                    skin_frac = max(skin_frac, float(skin.mean()))
+                    # 注意：skin 是 0/255 的 uint8，必须换算成 0~1 比例
+                    skin_frac = max(skin_frac, float((skin > 0).mean()))
                 except Exception:
                     continue
         if skin_frac > skin_thresh:

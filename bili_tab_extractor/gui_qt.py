@@ -169,6 +169,7 @@ class Worker(QThread):
                 max_height=self.max_height if self.max_height > 0 else 720,
                 work_dir=self.work_dir,
                 allow_manual=False,  # 后台线程不能弹手动框选窗口
+                api_key=load_api_key(),  # 横向滚动谱面用 VLM 读小节号
                 progress=lambda text, frac: self.progress.emit(text, frac),
             )
             self.done.emit(result, self.auto)
