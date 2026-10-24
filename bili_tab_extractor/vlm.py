@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
 
 import requests  # yt-dlp 的既有依赖，打包零额外体积
 
@@ -46,12 +47,21 @@ _USAGE = {
 # 降级前的确认回调（GUI 注册；返回 True=允许降级，False=中止）
 # 签名：asker(failed_model: str, error_msg: str, use_model: str) -> bool
 _fallback_asker = None
+# 并发保护：多个线程同时遇到 403 时，只询问一次
+_fallback_lock = threading.Lock()
+_fallback_asked = False
+_fallback_denied = False
 
 
 def set_fallback_asker(fn) -> None:
-    """注册"降级前询问用户"的回调（None 表示不询问、静默降级）。"""
-    global _fallback_asker
+    """注册"降级前询问用户"的回调（None 表示不询问、静默降级）。
+
+    每轮分析开始时调用一次，会重置"已询问"状态。
+    """
+    global _fallback_asker, _fallback_asked, _fallback_denied
     _fallback_asker = fn
+    _fallback_asked = False
+    _fallback_denied = False
 
 
 def get_usage() -> dict:
@@ -254,7 +264,7 @@ def _call(api_key: str | None, model: str, prompt: str, image_data_url: str,
             candidates.append(fb)
 
     last_err: Exception | None = None
-    asked = False
+    global _fallback_asked, _fallback_denied
     for m in candidates:
         try:
             result = _post_once(key, m, prompt, image_data_url, timeout)
@@ -266,25 +276,33 @@ def _call(api_key: str | None, model: str, prompt: str, image_data_url: str,
             if "401" in msg or "API Key 无效" in msg:
                 raise
             last_err = e
-            # 明确输出失败原因（额度耗尽/无权限），方便用户在日志里看到
-            try:
-                from util import log as _log
-                _log.warn(f"模型 {m} 调用失败：{msg}")
-            except Exception:
-                pass
             # 找下一个可降级模型
             nxt = next((c for c in candidates[candidates.index(m) + 1:]), None)
-            if nxt and not asked:
-                # 降级前询问用户（GUI 注册了 asker 时）
+            if not nxt:
+                continue
+            # 降级前询问用户：并发线程下只问一次（全局锁 + 标志）
+            with _fallback_lock:
+                if _fallback_asked:
+                    if _fallback_denied:
+                        raise RuntimeError(
+                            f"已中止：模型 {m} 额度/权限不足（{msg}），用户未允许降级")
+                    # 已确认过：静默降级（日志只在第一次询问时打印）
+                    continue
+                _fallback_asked = True
+                try:
+                    from util import log as _log
+                    _log.warn(f"模型 {m} 调用失败：{msg}")
+                except Exception:
+                    pass
                 if _fallback_asker is not None:
                     try:
                         allowed = _fallback_asker(m, msg, nxt)
                     except Exception:
                         allowed = True
                     if not allowed:
+                        _fallback_denied = True
                         raise RuntimeError(
                             f"已中止：模型 {m} 额度/权限不足（{msg}），用户未允许降级")
-                asked = True
                 try:
                     from util import log as _log
                     _log.warn(f"→ 自动切换到备用模型 {nxt} 继续")
