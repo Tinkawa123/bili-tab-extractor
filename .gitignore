@@ -98,3 +98,5 @@ dist_v8/
 build_v8/
 dist_v9/
 build_v9/
+dist_v10/
+build_v10/
