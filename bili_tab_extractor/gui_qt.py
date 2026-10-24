@@ -594,6 +594,7 @@ class ReviewWindow(QMainWindow):
         else:
             self.rows = list(result.kept_rows)
         self._thumbs: dict[int, QPixmap] = {}
+        self._thumb_cache: dict[tuple, QPixmap] = {}  # (source,index) -> 缩略图缓存
         self._similar: dict[int, list[int]] = {}  # 原始索引 -> 相似行索引列表
         self._compute_similar()
         # VLM 分析状态
@@ -817,10 +818,16 @@ class ReviewWindow(QMainWindow):
         lay.addLayout(bottom)
 
     def _render_list(self):
+        scroll = self.list_widget.verticalScrollBar().value()
         self.list_widget.clear()
         self._thumbs.clear()
         for i, row in enumerate(self.rows):
-            pm = bgr_to_pixmap(row.image, THUMB_W, THUMB_H)
+            # 缩略图缓存（key 用行标识，稳定不随删除变化）→ 重建列表时不用重新缩放
+            key = (row.source, row.index)
+            pm = self._thumb_cache.get(key)
+            if pm is None:
+                pm = bgr_to_pixmap(row.image, THUMB_W, THUMB_H)
+                self._thumb_cache[key] = pm
             self._thumbs[i] = pm
             text = f"第 {i + 1} 行   {row.image.shape[1]}×{row.image.shape[0]}   t={row.time:.0f}s"
             # AI 识别内容摘要
@@ -857,6 +864,8 @@ class ReviewWindow(QMainWindow):
         # 更新跳转范围与方块导航
         self.jump_spin.setRange(1, max(1, len(self.rows)))
         self._refresh_nav_grid()
+        # 恢复滚动位置（避免删除/重建后页面跳动）
+        self.list_widget.verticalScrollBar().setValue(scroll)
 
     def _refresh_nav_grid(self):
         """方块阵列导航：每行一个色块（绿=正常 / 黄=疑似重复 / 红=碎片），点击跳转。"""
@@ -992,18 +1001,37 @@ class ReviewWindow(QMainWindow):
         self.status_top.setText(f"已清理，剩 {len(self.rows)} 行")
         self._log(f"按 AI 建议清理完成：剩 {len(self.rows)} 行")
 
-    def _recalc_bar_dups(self):
-        """rows 变化后，AI 分析结果的索引失效 → 清空 AI 状态（可重新分析，命中缓存）。"""
+    def _remap_after_delete(self, idx: int):
+        """删除第 idx 行后，重映射所有按索引存储的结果（AI 标记/相似/碎片），
+        而不是清空或重算——这样删掉一对重复行后，其余标记仍然保留，且删除很快。"""
+        def shift_list(lst):
+            return [x - 1 if x > idx else x for x in lst if x != idx]
+
+        def shift_dict(d):
+            out = {}
+            for k, v in d.items():
+                if k == idx:
+                    continue
+                nk = k - 1 if k > idx else k
+                out[nk] = shift_list(v) if isinstance(v, list) else v
+            return out
+
         self._bar_dups = {}
+        # 像素相似标记：直接重映射（不重算，避免 O(n²) 像素比较导致卡顿）
+        self._similar = shift_dict(self._similar)
+        self._similar_groups = [shift_list(g) for g in self._similar_groups]
+        self._thumbs = shift_dict(self._thumbs)
         if not self._ai_done:
             return
-        self._ai_analyses = {}
-        self._ai_dups = {}
-        self._ai_dup_groups = []
-        self._incomplete_rows = set()
-        self._ai_done = False
-        self.clean_btn.setEnabled(False)
-        self.status_top.setText("行已变更，AI 结果已重置（可重新点「AI 识别 + 去重」）")
+        self._ai_analyses = shift_dict(self._ai_analyses)
+        self._ai_dups = shift_dict(self._ai_dups)
+        self._incomplete_rows = {x - 1 if x > idx else x
+                                 for x in self._incomplete_rows if x != idx}
+        self._ai_dup_groups = [shift_list(g) for g in self._ai_dup_groups]
+
+    def _recalc_bar_dups(self):
+        """兼容旧调用：行变化后重算相似标记（保留 AI 结果）。"""
+        self._bar_dups = {}
 
     def _log(self, msg: str):
         """转发到主窗口日志。"""
@@ -1013,11 +1041,14 @@ class ReviewWindow(QMainWindow):
         item = self.list_widget.currentItem()
         if item is None:
             return
-        orig = item.data(Qt.UserRole)
-        del self.rows[orig]
-        self._compute_similar()
-        self._recalc_bar_dups()
+        idx = item.data(Qt.UserRole)
+        scroll = self.list_widget.verticalScrollBar().value()
+        del self.rows[idx]
+        # 重映射标记（保留 AI/相似），不重算 → 删除瞬间完成
+        self._remap_after_delete(idx)
         self._render_list()
+        self.list_widget.verticalScrollBar().setValue(scroll)
+        self.status_top.setText(f"已删除，剩 {len(self.rows)} 行")
 
     def _recover(self):
         kept_keys = {(r.source, r.index) for r in self.rows}
