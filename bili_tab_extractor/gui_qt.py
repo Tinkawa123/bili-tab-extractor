@@ -555,6 +555,7 @@ class BarReader(QThread):
     progress = Signal(int, int)   # (done, total)
     done = Signal(object)         # {row_index: 分析结果dict}
     error = Signal(str)
+    ask_fallback = Signal(str, str, str, object)  # (失败模型, 错误, 备用模型, 上下文)
 
     def __init__(self, rows, cache_path, api_key=None, parent=None):
         super().__init__(parent)
@@ -563,6 +564,18 @@ class BarReader(QThread):
         self.api_key = api_key
 
     def run(self):
+        import threading
+
+        import vlm as _vlm
+
+        def asker(failed_model: str, err_msg: str, use_model: str) -> bool:
+            """跨线程：发信号到主线程弹框确认，阻塞等待用户选择。"""
+            ctx = {"event": threading.Event(), "ok": True}
+            self.ask_fallback.emit(failed_model, err_msg, use_model, ctx)
+            ctx["event"].wait(timeout=180)
+            return bool(ctx["ok"])
+
+        _vlm.set_fallback_asker(asker)
         try:
             results = analyze_rows(
                 self.rows, api_key=self.api_key, cache_path=self.cache_path,
@@ -577,6 +590,8 @@ class BarReader(QThread):
             self.error.emit(f"处理被终止: {e}")
         except Exception as e:
             self.error.emit(str(e))
+        finally:
+            _vlm.set_fallback_asker(None)
 
 
 class PreviewView(QGraphicsView):
@@ -692,7 +707,24 @@ class ReviewWindow(QMainWindow):
         self._bar_thread.progress.connect(self._on_ai_progress)
         self._bar_thread.done.connect(self._on_ai_done)
         self._bar_thread.error.connect(self._on_ai_error)
+        self._bar_thread.ask_fallback.connect(self._on_ask_fallback)
         self._bar_thread.start()
+
+    def _on_ask_fallback(self, failed_model: str, err_msg: str, use_model: str, ctx: dict):
+        """模型降级前询问用户（跨线程：由 Worker 发信号到主线程弹框）。"""
+        self._log(f"[警告] 模型 {failed_model} 调用失败：{err_msg}")
+        reply = QMessageBox.question(
+            self, "AI 模型额度不足",
+            f"模型 {failed_model} 调用失败：\n{err_msg}\n\n"
+            f"是否自动切换到备用模型 {use_model} 继续？\n"
+            f"（选「否」将中止本次 AI 分析）",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        ctx["ok"] = (reply == QMessageBox.Yes)
+        ctx["event"].set()
+        if ctx["ok"]:
+            self._log(f"已确认降级 → {use_model}")
+        else:
+            self._log("用户拒绝降级，已中止")
 
     def _on_ai_progress(self, done: int, total: int):
         self.status_top.setText(f"AI 分析中… {done}/{total}")

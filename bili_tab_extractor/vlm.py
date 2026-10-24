@@ -43,6 +43,16 @@ _USAGE = {
     "est_tokens": 0,     # 估算消耗 token（输入+输出）
 }
 
+# 降级前的确认回调（GUI 注册；返回 True=允许降级，False=中止）
+# 签名：asker(failed_model: str, error_msg: str, use_model: str) -> bool
+_fallback_asker = None
+
+
+def set_fallback_asker(fn) -> None:
+    """注册"降级前询问用户"的回调（None 表示不询问、静默降级）。"""
+    global _fallback_asker
+    _fallback_asker = fn
+
 
 def get_usage() -> dict:
     """返回本次运行的用量统计（副本）。"""
@@ -244,6 +254,7 @@ def _call(api_key: str | None, model: str, prompt: str, image_data_url: str,
             candidates.append(fb)
 
     last_err: Exception | None = None
+    asked = False
     for m in candidates:
         try:
             result = _post_once(key, m, prompt, image_data_url, timeout)
@@ -255,6 +266,30 @@ def _call(api_key: str | None, model: str, prompt: str, image_data_url: str,
             if "401" in msg or "API Key 无效" in msg:
                 raise
             last_err = e
+            # 明确输出失败原因（额度耗尽/无权限），方便用户在日志里看到
+            try:
+                from util import log as _log
+                _log.warn(f"模型 {m} 调用失败：{msg}")
+            except Exception:
+                pass
+            # 找下一个可降级模型
+            nxt = next((c for c in candidates[candidates.index(m) + 1:]), None)
+            if nxt and not asked:
+                # 降级前询问用户（GUI 注册了 asker 时）
+                if _fallback_asker is not None:
+                    try:
+                        allowed = _fallback_asker(m, msg, nxt)
+                    except Exception:
+                        allowed = True
+                    if not allowed:
+                        raise RuntimeError(
+                            f"已中止：模型 {m} 额度/权限不足（{msg}），用户未允许降级")
+                asked = True
+                try:
+                    from util import log as _log
+                    _log.warn(f"→ 自动切换到备用模型 {nxt} 继续")
+                except Exception:
+                    pass
             continue
     _USAGE["failed"] += 1
     raise RuntimeError(f"所有模型均调用失败（最后错误：{last_err}）")
