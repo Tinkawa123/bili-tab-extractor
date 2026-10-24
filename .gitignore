@@ -5,10 +5,12 @@ pylibs/
 dist/
 dist_v2/
 dist_v3/
+dist_v4/
 dist_new/
 build/
 build_v2/
 build_v3/
+build_v4/
 build_new/
 *.spec
 
