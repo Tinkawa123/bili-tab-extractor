@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QSplitter, QDialog, QScrollArea,
     QFileDialog, QMessageBox, QSpinBox, QDoubleSpinBox, QStyle,
     QAbstractItemView, QScroller, QGridLayout,
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
 )
 
 from pipeline import process, TabRow, PipelineResult
@@ -542,6 +543,26 @@ class BarReader(QThread):
             self.error.emit(str(e))
 
 
+class PreviewView(QGraphicsView):
+    """右侧大图预览：滚轮缩放 + 左键拖拽平移。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setRenderHints(self.renderHints())
+
+    def wheelEvent(self, event):
+        """滚轮缩放（不滚动滚动条）。"""
+        factor = 1.15 if event.angleDelta().y() > 0 else (1.0 / 1.15)
+        self.scale(factor, factor)
+
+    def mouseDoubleClickEvent(self, event):
+        # 双击由父窗口处理（打开全屏大图），这里不拦截
+        super().mouseDoubleClickEvent(event)
+
+
 class ZoomDialog(QDialog):
     """双击弹出的可缩放大图窗口（滚轮缩放）。"""
 
@@ -773,13 +794,32 @@ class ReviewWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Y"), self, activated=self._redo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self._redo)
 
-        # 方块阵列导航：每行一个色块（绿=正常 / 黄=疑似重复 / 红=碎片），点击跳转
+        # 方块阵列导航：每行一个色块，点击跳转；左侧带图例
+        nav_row = QHBoxLayout()
+        nav_row.setSpacing(6)
+        nav_title = QLabel("导航")
+        nav_title.setObjectName("sectionTitle")
+        nav_row.addWidget(nav_title)
+        # 图例：绿=正常 / 黄=疑似重复 / 红=残谱
+        for color, text in (("#81c784", "正常"),
+                            ("#ffd54f", "疑似重复"),
+                            ("#ef5350", "残谱")):
+            box = QLabel()
+            box.setFixedSize(12, 12)
+            box.setStyleSheet(
+                f"background:{color}; border:1px solid #999; border-radius:2px;")
+            nav_row.addWidget(box)
+            nav_row.addWidget(QLabel(text))
+        nav_row.addSpacing(14)
         self.nav_container = QWidget()
         self.nav_grid = QGridLayout(self.nav_container)
         self.nav_grid.setContentsMargins(0, 0, 0, 0)
         self.nav_grid.setSpacing(2)
         self.nav_buttons: list[QPushButton] = []
-        lay.addWidget(self.nav_container)
+        self._nav_base_color: dict[int, str] = {}
+        nav_row.addWidget(self.nav_container)
+        nav_row.addStretch(1)
+        lay.addLayout(nav_row)
 
         # 左右分栏：列表 + 预览
         splitter = QSplitter(Qt.Horizontal)
@@ -805,14 +845,16 @@ class ReviewWindow(QMainWindow):
         self.list_widget.model().rowsMoved.connect(self._on_rows_moved)
         splitter.addWidget(self.list_widget)
 
-        # 右：侧边栏预览
-        self.preview_scroll = QScrollArea()
-        self.preview_scroll.setWidgetResizable(True)
-        self.preview_label = QLabel("点击左侧缩略图查看大图")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setStyleSheet("background: #f0f0f0; color: #888;")
-        self.preview_scroll.setWidget(self.preview_label)
-        splitter.addWidget(self.preview_scroll)
+        # 右：侧边栏预览（PreviewView：滚轮缩放 + 拖拽平移）
+        self.preview_view = PreviewView()
+        self.preview_scene = QGraphicsScene(self.preview_view)
+        self.preview_view.setScene(self.preview_scene)
+        self.preview_view.setBackgroundBrush(QColor("#f0f0f0"))
+        self.preview_view.setToolTip("滚轮缩放 · 按住左键拖拽平移 · 双击全屏")
+        self.preview_item = None
+        self.preview_pixmap = None
+        self._preview_fit_done = False
+        splitter.addWidget(self.preview_view)
         splitter.setSizes([680, 470])
 
         # 操作按钮
@@ -961,6 +1003,7 @@ class ReviewWindow(QMainWindow):
                     top_key = (r.source, r.index)
         self.list_widget.clear()
         self._thumbs.clear()
+        group_color = self._dup_group_color()
         for i, row in enumerate(self.rows):
             # 缩略图缓存（key 用行标识，稳定不随删除变化）→ 重建列表时不用重新缩放
             key = (row.source, row.index)
@@ -993,13 +1036,15 @@ class ReviewWindow(QMainWindow):
             item.setData(Qt.UserRole, i)
             item.setSizeHint(QSize(THUMB_W, THUMB_H + 24))
             if frag:
-                item.setBackground(QColor("#ffcdd2"))  # 浅红：碎片/空谱
-                item.setToolTip("AI 判定为碎片/空谱（内容不完整），建议删除")
+                item.setBackground(QColor("#ffcdd2"))  # 浅红：残谱/碎片
+                item.setToolTip("AI 判定为残谱/碎片（内容不完整），建议删除")
             elif ai_dup:
-                item.setBackground(QColor("#ffe0b2"))  # 橙色：AI 语义判重
-                item.setToolTip("AI 识别内容与其它行重复")
+                # 组色：不同重复组不同黄色（与导航方块一致）
+                item.setBackground(QColor(group_color.get(i, "#ffe0b2")))
+                gi = next((k for k, g in enumerate(self._ai_dup_groups) if i in g), -1)
+                item.setToolTip(f"疑似重复（第 {gi + 1} 组）")
             elif pix_dup:
-                item.setBackground(QColor("#fff3cd"))  # 浅黄：像素相似
+                item.setBackground(QColor("#eceff1"))  # 灰：像素相似
             self.list_widget.addItem(item)
         # 更新跳转范围与方块导航
         self.jump_spin.setRange(1, max(1, len(self.rows)))
@@ -1017,39 +1062,70 @@ class ReviewWindow(QMainWindow):
         else:
             self.list_widget.verticalScrollBar().setValue(scroll)
 
+    # 重复组配色板（不同组用不同黄色系，便于区分 A1A2 / B1B2 两组）
+    DUP_PALETTE = ["#ffd54f", "#ffb74d", "#ffe082", "#ffcc80",
+                   "#fff176", "#ffcf40", "#ffab91", "#ffe0b2"]
+
+    def _dup_group_color(self) -> dict[int, str]:
+        """行索引 -> 该行所属重复组的颜色（不同组不同色）。"""
+        out = {}
+        for gi, g in enumerate(self._ai_dup_groups):
+            color = self.DUP_PALETTE[gi % len(self.DUP_PALETTE)]
+            for i in g:
+                out[i] = color
+        return out
+
     def _refresh_nav_grid(self):
-        """方块阵列导航：每行一个色块（绿=正常 / 黄=疑似重复 / 红=碎片），点击跳转。"""
-        # 清空旧方块
+        """方块阵列导航：每行一个色块，点击跳转。
+
+        颜色：绿=正常 / 红=残谱 / 黄系=疑似重复（不同重复组不同黄色）。
+        当前选中行加粗边框高亮。
+        """
         for btn in self.nav_buttons:
             btn.setParent(None)
             btn.deleteLater()
         self.nav_buttons = []
+        self._nav_base_color = {}
+        group_color = self._dup_group_color()
         cols = 24
         for i in range(len(self.rows)):
             frag = i in self._incomplete_rows
             ai_dup = i in self._ai_dups
             pix_dup = i in self._similar
             if frag:
-                color = "#ef5350"      # 红：碎片/空谱
-                tip = f"第 {i + 1} 行：碎片/空谱"
+                color = "#ef5350"      # 红：残谱/碎片
+                tip = f"第 {i + 1} 行：残谱/碎片"
             elif ai_dup:
-                color = "#ffd54f"      # 黄：AI 判重复
-                tip = f"第 {i + 1} 行：疑似重复（AI）"
+                color = group_color.get(i, "#ffd54f")   # 组色（不同组不同黄）
+                gi = next((k for k, g in enumerate(self._ai_dup_groups) if i in g), -1)
+                tip = f"第 {i + 1} 行：疑似重复（第 {gi + 1} 组）"
             elif pix_dup:
-                color = "#ffecb3"      # 浅黄：像素相似
+                color = "#b0bec5"      # 灰蓝：像素相似
                 tip = f"第 {i + 1} 行：疑似重复（像素）"
             else:
                 color = "#81c784"      # 绿：正常
                 tip = f"第 {i + 1} 行"
+            self._nav_base_color[i] = color
             btn = QPushButton()
             btn.setFixedSize(16, 16)
             btn.setToolTip(tip)
-            btn.setStyleSheet(
-                f"QPushButton {{ background: {color}; border: 1px solid #999; border-radius: 2px; }}"
-                f"QPushButton:hover {{ border: 2px solid #333; }}")
             btn.clicked.connect(lambda checked=False, idx=i: self._jump_to_index(idx))
             self.nav_grid.addWidget(btn, i // cols, i % cols)
             self.nav_buttons.append(btn)
+        # 应用样式（含当前选中高亮）
+        cur = self.list_widget.currentRow()
+        self._highlight_nav(cur if cur >= 0 else -1)
+
+    def _highlight_nav(self, idx: int):
+        """高亮导航方块（选中行加粗边框），其余恢复基础样式。"""
+        for k, btn in enumerate(self.nav_buttons):
+            base = self._nav_base_color.get(k, "#81c784")
+            if k == idx:
+                border = "3px solid #1a1a1a"
+            else:
+                border = "1px solid #999"
+            btn.setStyleSheet(
+                f"QPushButton {{ background: {base}; border: {border}; border-radius: 2px; }}")
 
     def _jump_to_index(self, idx: int):
         """跳到指定行（方块阵列/导航用）。"""
@@ -1058,6 +1134,7 @@ class ReviewWindow(QMainWindow):
             self.list_widget.scrollToItem(item, QAbstractItemView.PositionAtCenter)
             self.list_widget.setCurrentItem(item)
             self.jump_spin.setValue(idx + 1)
+            self._highlight_nav(idx)
 
     def _jump_to(self):
         target = self.jump_spin.value() - 1  # 显示 1-based，内部 0-based
@@ -1099,13 +1176,37 @@ class ReviewWindow(QMainWindow):
         if current is None:
             return
         orig = current.data(Qt.UserRole)
+        if not (0 <= orig < len(self.rows)):
+            return
         row = self.rows[orig]
-        pm = bgr_to_pixmap(row.image, 520, 420)
-        self.preview_label.setPixmap(pm)
-        self.preview_label.setStyleSheet("background: #f0f0f0;")
+        self._set_preview(row.image)
+        # 联动：导航方块也高亮当前行
+        self._highlight_nav(self.list_widget.currentRow())
+
+    def _set_preview(self, image):
+        """右侧大图预览（QGraphicsView，支持滚轮缩放 + 拖拽）。"""
+        from PySide6.QtGui import QPixmap
+        from PySide6.QtWidgets import QGraphicsPixmapItem
+
+        # BGR → QPixmap（保留原始分辨率，缩放交给视图）
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        h, w, _ = rgb.shape
+        from PySide6.QtGui import QImage
+        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
+        self.preview_pixmap = QPixmap.fromImage(qimg)
+        self.preview_scene.clear()
+        self.preview_item = QGraphicsPixmapItem(self.preview_pixmap)
+        self.preview_scene.addItem(self.preview_item)
+        self.preview_scene.setSceneRect(0, 0, w, h)
+        # 首次显示：适应窗口；之后保持用户缩放级别
+        self.preview_view.resetTransform()
+        self.preview_view.fitInView(self.preview_item, Qt.KeepAspectRatio)
+        self._preview_fit_done = True
 
     def _on_double_click(self, item):
         orig = item.data(Qt.UserRole)
+        if not (0 <= orig < len(self.rows)):
+            return
         row = self.rows[orig]
         dlg = ZoomDialog(row.image.copy(), f"第 {orig + 1} 行预览（t={row.time:.0f}s）", self)
         dlg.exec()
