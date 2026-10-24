@@ -606,6 +606,9 @@ class ReviewWindow(QMainWindow):
         self._ai_dups: dict[int, list[int]] = {}    # row_idx -> 重复的其它行
         self._ai_dup_groups: list[list[int]] = []
         self._incomplete_rows: set[int] = set()     # 碎片/空谱行
+        # 撤销/重做栈（存完整状态快照）
+        self._undo_stack: list[dict] = []
+        self._redo_stack: list[dict] = []
 
         self.setWindowTitle(f"人工核验 - {result.title}")
         self.resize(1250, 800)
@@ -747,7 +750,24 @@ class ReviewWindow(QMainWindow):
         self.read_bars_btn = QPushButton("AI 识别 + 去重")
         self.read_bars_btn.clicked.connect(self._on_ai_analyze)
         top.addWidget(self.read_bars_btn)
+        # 撤销 / 重做（实体按钮）
+        self.undo_btn = QPushButton("↶ 撤销")
+        self.undo_btn.setEnabled(False)
+        self.undo_btn.setToolTip("撤销上一步（Ctrl+Z）")
+        self.undo_btn.clicked.connect(self._undo)
+        top.addWidget(self.undo_btn)
+        self.redo_btn = QPushButton("↷ 重做")
+        self.redo_btn.setEnabled(False)
+        self.redo_btn.setToolTip("重做被撤销的操作（Ctrl+Y）")
+        self.redo_btn.clicked.connect(self._redo)
+        top.addWidget(self.redo_btn)
         lay.addLayout(top)
+
+        # 快捷键：Ctrl+Z 撤销 / Ctrl+Y（或 Ctrl+Shift+Z）重做
+        from PySide6.QtGui import QKeySequence, QShortcut
+        QShortcut(QKeySequence("Ctrl+Z"), self, activated=self._undo)
+        QShortcut(QKeySequence("Ctrl+Y"), self, activated=self._redo)
+        QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self._redo)
 
         # 方块阵列导航：每行一个色块（绿=正常 / 黄=疑似重复 / 红=碎片），点击跳转
         self.nav_container = QWidget()
@@ -775,6 +795,10 @@ class ReviewWindow(QMainWindow):
         self.list_widget.verticalScrollBar().setSingleStep(24)
         self.list_widget.currentItemChanged.connect(self._on_select)
         self.list_widget.itemDoubleClicked.connect(self._on_double_click)
+        # 拖拽排序：记录拖拽前快照（支持撤销）+ 拖拽后重排 rows
+        self._drag_snapshot = None
+        self.list_widget.model().rowsAboutToBeMoved.connect(self._on_rows_about_to_move)
+        self.list_widget.model().rowsMoved.connect(self._on_rows_moved)
         splitter.addWidget(self.list_widget)
 
         # 右：侧边栏预览
@@ -817,8 +841,120 @@ class ReviewWindow(QMainWindow):
         bottom.addWidget(self.confirm_btn)
         lay.addLayout(bottom)
 
+    def _on_rows_about_to_move(self, *args):
+        """拖拽开始：记录快照（撤销用）。"""
+        self._drag_snapshot = self._snapshot()
+
+    def _on_rows_moved(self, *args):
+        """拖拽完成：按显示顺序重排 rows，重映射标记，记录撤销点。"""
+        pre = self._drag_snapshot
+        self._drag_snapshot = None
+        old_rows = list(self.rows)
+        new_order = self._current_rows()
+        if [id(r) for r in new_order] == [id(r) for r in old_rows]:
+            return  # 顺序没变
+        self.rows = new_order
+        # 旧索引 -> 新索引映射（按对象 identity）
+        pos = {id(r): i for i, r in enumerate(new_order)}
+        remap = {}
+        for old_i, r in enumerate(old_rows):
+            ni = pos.get(id(r))
+            if ni is not None and ni != old_i:
+                remap[old_i] = ni
+        if remap:
+            def rk(k):
+                return remap.get(k, k)
+            def remap_dict(d):
+                out = {}
+                for k, v in d.items():
+                    nk = rk(k)
+                    out[nk] = [rk(x) for x in v] if isinstance(v, list) else v
+                return out
+            self._ai_analyses = remap_dict(self._ai_analyses)
+            self._ai_dups = remap_dict(self._ai_dups)
+            self._similar = remap_dict(self._similar)
+            self._incomplete_rows = {rk(x) for x in self._incomplete_rows}
+            self._ai_dup_groups = [[rk(x) for x in g] for g in self._ai_dup_groups]
+            self._similar_groups = [[rk(x) for x in g] for g in self._similar_groups]
+        if pre is not None:
+            self._undo_stack.append(pre)
+            self._redo_stack.clear()
+            self._update_undo_buttons()
+        self._render_list()
+        self.status_top.setText("已调整顺序（可 Ctrl+Z 撤销）")
+
+    def _snapshot(self) -> dict:
+        """当前完整状态快照（撤销/重做用）。"""
+        return {
+            "rows": list(self.rows),
+            "ai_analyses": dict(self._ai_analyses),
+            "ai_dups": {k: list(v) for k, v in self._ai_dups.items()},
+            "ai_dup_groups": [list(g) for g in self._ai_dup_groups],
+            "incomplete": set(self._incomplete_rows),
+            "similar": {k: list(v) for k, v in self._similar.items()},
+            "similar_groups": [list(g) for g in self._similar_groups],
+            "ai_done": self._ai_done,
+        }
+
+    def _restore(self, snap: dict):
+        """恢复到某个快照。"""
+        self.rows = list(snap["rows"])
+        self._ai_analyses = dict(snap["ai_analyses"])
+        self._ai_dups = {k: list(v) for k, v in snap["ai_dups"].items()}
+        self._ai_dup_groups = [list(g) for g in snap["ai_dup_groups"]]
+        self._incomplete_rows = set(snap["incomplete"])
+        self._similar = {k: list(v) for k, v in snap["similar"].items()}
+        self._similar_groups = [list(g) for g in snap["similar_groups"]]
+        self._ai_done = snap["ai_done"]
+
+    def _push_undo(self):
+        """操作前调用：保存当前状态，清空重做栈。"""
+        self._undo_stack.append(self._snapshot())
+        self._redo_stack.clear()
+        self._update_undo_buttons()
+
+    def _undo(self):
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(self._snapshot())
+        self._restore(self._undo_stack.pop())
+        self._render_list()
+        self._update_undo_buttons()
+        self.status_top.setText(f"已撤销（剩 {len(self.rows)} 行）")
+
+    def _redo(self):
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(self._snapshot())
+        self._restore(self._redo_stack.pop())
+        self._render_list()
+        self._update_undo_buttons()
+        self.status_top.setText(f"已重做（剩 {len(self.rows)} 行）")
+
+    def _update_undo_buttons(self):
+        self.undo_btn.setEnabled(bool(self._undo_stack))
+        self.redo_btn.setEnabled(bool(self._redo_stack))
+
     def _render_list(self):
-        scroll = self.list_widget.verticalScrollBar().value()
+        # 记录"当前顶部可见项"的 key（比滚动像素值更稳定：行高不同也不会跳）
+        sb = self.list_widget.verticalScrollBar()
+        scroll = sb.value() if self.list_widget.count() > 0 else 0
+        top_key = None
+        if self.list_widget.count() > 0:
+            vp = self.list_widget.viewport()
+            item_at_top = self.list_widget.itemAt(vp.mapTo(self.list_widget, vp.rect().topLeft()))
+            if item_at_top is None:
+                # 取第一个可见项
+                for pos in range(self.list_widget.count()):
+                    rect = self.list_widget.visualItemRect(self.list_widget.item(pos))
+                    if rect.bottom() > sb.value():
+                        item_at_top = self.list_widget.item(pos)
+                        break
+            if item_at_top is not None:
+                idx = item_at_top.data(Qt.UserRole)
+                if isinstance(idx, int) and 0 <= idx < len(self.rows):
+                    r = self.rows[idx]
+                    top_key = (r.source, r.index)
         self.list_widget.clear()
         self._thumbs.clear()
         for i, row in enumerate(self.rows):
@@ -864,8 +1000,18 @@ class ReviewWindow(QMainWindow):
         # 更新跳转范围与方块导航
         self.jump_spin.setRange(1, max(1, len(self.rows)))
         self._refresh_nav_grid()
-        # 恢复滚动位置（避免删除/重建后页面跳动）
-        self.list_widget.verticalScrollBar().setValue(scroll)
+        # 恢复滚动位置：优先定位到"原来的顶部项"（无跳动），找不到再按像素偏移恢复
+        if top_key is not None:
+            for pos in range(self.list_widget.count()):
+                it = self.list_widget.item(pos)
+                old_idx = it.data(Qt.UserRole)
+                if 0 <= old_idx < len(self.rows):
+                    r = self.rows[old_idx]
+                    if (r.source, r.index) == top_key:
+                        self.list_widget.scrollToItem(it, QAbstractItemView.PositionAtTop)
+                        break
+        else:
+            self.list_widget.verticalScrollBar().setValue(scroll)
 
     def _refresh_nav_grid(self):
         """方块阵列导航：每行一个色块（绿=正常 / 黄=疑似重复 / 红=碎片），点击跳转。"""
@@ -984,6 +1130,7 @@ class ReviewWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply != QMessageBox.Yes:
             return
+        self._push_undo()   # 清理前快照（支持 Ctrl+Z 撤销）
         # 删除前把被删的行存入"丢弃池"（供找回）
         for i in sorted(to_del):
             if 0 <= i < len(self.rows):
@@ -998,7 +1145,7 @@ class ReviewWindow(QMainWindow):
         self.clean_btn.setEnabled(False)
         self._compute_similar()
         self._render_list()
-        self.status_top.setText(f"已清理，剩 {len(self.rows)} 行")
+        self.status_top.setText(f"已清理，剩 {len(self.rows)} 行（可 Ctrl+Z 撤销）")
         self._log(f"按 AI 建议清理完成：剩 {len(self.rows)} 行")
 
     def _remap_after_delete(self, idx: int):
@@ -1042,13 +1189,12 @@ class ReviewWindow(QMainWindow):
         if item is None:
             return
         idx = item.data(Qt.UserRole)
-        scroll = self.list_widget.verticalScrollBar().value()
+        self._push_undo()   # 删除前快照（支持 Ctrl+Z 撤销）
         del self.rows[idx]
         # 重映射标记（保留 AI/相似），不重算 → 删除瞬间完成
         self._remap_after_delete(idx)
         self._render_list()
-        self.list_widget.verticalScrollBar().setValue(scroll)
-        self.status_top.setText(f"已删除，剩 {len(self.rows)} 行")
+        self.status_top.setText(f"已删除，剩 {len(self.rows)} 行（可 Ctrl+Z 撤销）")
 
     def _recover(self):
         kept_keys = {(r.source, r.index) for r in self.rows}
@@ -1059,6 +1205,7 @@ class ReviewWindow(QMainWindow):
             return
         dlg = RecoverDialog(recoverable, self)
         if dlg.exec() == QDialog.Accepted:
+            self._push_undo()   # 找回前快照
             added = dlg.selected_rows()
             self.rows.extend(added)
             self.rows.sort(key=lambda r: (r.time, r.index))
@@ -1076,6 +1223,7 @@ class ReviewWindow(QMainWindow):
         if img is None:
             QMessageBox.critical(self, "错误", f"无法读取图片: {path}")
             return
+        self._push_undo()   # 导入前快照
         self.rows.append(TabRow(img, -1, os.path.basename(path), 0))
         self._compute_similar()
         self._recalc_bar_dups()

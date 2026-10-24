@@ -55,7 +55,7 @@ _gui_full_work/
 _gui_work_*/
 _look/
 _runtime_tmp/
-check_*.py
+/check_*.py
 
 # 测试运行临时工作目录（各种前缀变体，必须全覆盖）
 _final_work_*/
@@ -69,4 +69,12 @@ _nav_*/
 _type_work_*/
 _*_work_*/
 _*_work/
+
+# 测试集产物（视频/缓存/运行中间文件太大，不提交；只提交 manifest 和脚本）
+testset/videos/
+testset/cache/
+testset/work/
+testset/report/
+testset/baseline/previews/
+testset/_smoke_manifest.json
 
