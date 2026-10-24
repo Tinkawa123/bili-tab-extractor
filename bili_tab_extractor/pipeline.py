@@ -86,11 +86,13 @@ def crop_frames(frames: list[str], box: Box, crops_dir: str) -> list[str]:
 
 
 def _process_horizontal(crop_imgs, api_key, work_dir, p, use_vlm=True,
-                        thresholds: dict | None = None) -> list[TabRow]:
+                        thresholds: dict | None = None,
+                        state: dict | None = None) -> list[TabRow]:
     """横向滚动谱带处理。
 
     优先：VLM 读每帧小节号 → 按小节号去重、按小节号排序（最可靠）。
     回退：像素位移分段拼接 → 切段。
+    state: 可选 dict，用于向调用方回传处理方式（state["vlm_ok"] = True/False）。
     """
     from stitch import (crop_screen_top, estimate_shift, is_transition_frame,
                         normalize_heights, split_wide_image, stitch_horizontal)
@@ -144,10 +146,16 @@ def _process_horizontal(crop_imgs, api_key, work_dir, p, use_vlm=True,
             if rows:
                 rows.sort(key=lambda r: r.index)  # 按起始小节号排序
                 log.success(f"VLM 小节号去重：{len(cleaned)} 帧 → {len(rows)} 段")
+                if state is not None:
+                    state["vlm_ok"] = True
                 return rows
             log.warn("VLM 未识别到小节号，回退像素拼接")
+            if state is not None:
+                state["vlm_ok"] = False
         except Exception as e:
             log.warn(f"VLM 小节号识别失败，回退像素拼接: {e}")
+            if state is not None:
+                state["vlm_ok"] = False
 
     # 回退：像素位移分段拼接
     p("正在横向拼接谱带…", 50)
@@ -166,6 +174,12 @@ def _process_horizontal(crop_imgs, api_key, work_dir, p, use_vlm=True,
             for sec in split_wide_image(seg):
                 rows.append(TabRow(sec, 0, f"section-{idx}", idx))
                 idx += 1
+    # 段数太少（<6）说明这不是"持续滚动的谱带"，更可能是翻页视频被误判：
+    # 回退到整屏模式更安全（像素拼接会把翻页内容错位拼在一起）。
+    if rows and len(rows) < 6 and state is not None:
+        log.warn(f"横向拼接只得到 {len(rows)} 段（偏少），判定为翻页型 → 回退整屏模式")
+        state["fallback_screen"] = True
+        return []
     return rows
 
 
@@ -205,7 +219,14 @@ def _is_real_horizontal_scroll(crop_imgs, min_shift: float = 30.0) -> tuple[bool
     mags = [abs(d) for d in dxs]
     med = sorted(mags)[len(mags) // 2]
     consistent = sum(1 for m in mags if 0.5 * med <= m <= 1.5 * med) / len(mags)
-    ok = best_run >= 3 and consistent >= 0.6
+    # 同号比例（Guitar Pro 谱带持续同向滚动时该值高）
+    signs = [1 if d > 0 else -1 for d in dxs]
+    same_ratio = sum(1 for s in signs if s == signs[0]) / len(signs)
+    # 判定：
+    # ① 连续同向 + 幅度稳定 → 真滚动（理想情形）；
+    # ② 位移很大（>=200px，明显在滚动）且同向比例 >=0.5 → 也算真滚动
+    #    （抽帧间隔大时相位相关会出现混叠，幅度不稳定，但方向仍以同向为主）
+    ok = (best_run >= 3 and consistent >= 0.6) or (same_ratio >= 0.5 and med >= 200)
     return ok, med
 
 
@@ -311,13 +332,27 @@ def process(url: str = None, video: str = None, title: str = None,
         log.info(f"横向滚动判定: {'真滚动' if scroll_significant else '静止/翻页'} "
                  f"（位移中位数 {med_dx:.0f}px）")
 
+        # 记录处理方式（用于末尾"总结"日志，让用户一眼看出走的哪条路）
+        mode_state: dict = {}
+        mode = "cv_rows"   # 默认：多行排列，纯本地 CV 切分
+
         if scroll_significant and screen_single_row:
             # 横向滚动谱带：VLM 读小节号去重（优先），像素拼接回退
             all_rows = _process_horizontal(
-                crop_imgs, api_key, work_dir, p, vlm_on_horizontal, thresholds)
-            used_horizontal = True
-        elif screen_single_row:
+                crop_imgs, api_key, work_dir, p, vlm_on_horizontal, thresholds,
+                state=mode_state)
+            if mode_state.get("fallback_screen"):
+                # 拼接段数过少 → 实际是翻页型视频，回退整屏模式
+                scroll_significant = False
+                screen_single_row = True
+            else:
+                used_horizontal = True
+                mode = ("vlm_horizontal" if mode_state.get("vlm_ok") is True
+                        else "cv_pixel_horizontal")
+
+        if not all_rows and screen_single_row:
             # 整屏一行（静止/翻页/轻微滚动）：每帧一屏作为一行，后续像素去重
+            mode = "cv_screen"
             p("正在整理整屏谱行…", 45)
             for ci, img in enumerate(crop_imgs):
                 try:
@@ -367,6 +402,22 @@ def process(url: str = None, video: str = None, title: str = None,
             kept_rows.sort(key=lambda r: (r.time, r.index))
 
         p("处理完成", 100)
+
+        # ---------- 处理方式总结（一眼看出走的哪条路）----------
+        n_kept = len(kept_rows)
+        log.step("处理方式总结")
+        if mode == "vlm_horizontal":
+            log.success(f"谱面类型：横向滚动 → AI（VLM）识别小节号去重成功，{n_kept} 段"
+                        f"（模型读小节号，按小节顺序排列）")
+        elif mode == "cv_pixel_horizontal":
+            log.warn(f"谱面类型：横向滚动 → AI 未成功（或未启用），回退纯本地 CV 像素拼接，{n_kept} 段")
+        elif mode == "cv_screen":
+            log.success(f"谱面类型：整屏/翻页（单屏一条谱行）→ 纯本地 CV 处理（未使用 AI），"
+                        f"{n_kept} 行")
+        else:
+            log.success(f"谱面类型：多行排列 → 纯本地 CV 切分（未使用 AI），{n_kept} 行")
+        log.info("提示：如需语义去重（识别和弦/歌词/残谱），请在核验界面点「AI 识别 + 去重」")
+
         return PipelineResult(title, box, all_rows, kept_rows)
     finally:
         if cleanup and not keep_temp:
