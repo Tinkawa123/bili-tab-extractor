@@ -100,6 +100,12 @@ def analyze_rows(rows, api_key: str | None = None, model: str | None = None,
     progress: callable(done, total)
     返回 {row_index: 规范化分析结果}
     """
+    try:
+        from vlm import reset_usage
+
+        reset_usage()
+    except Exception:
+        pass
     cache: dict = {}
     if cache_path and os.path.isfile(cache_path):
         try:
@@ -150,6 +156,19 @@ def analyze_rows(rows, api_key: str | None = None, model: str | None = None,
                 json.dump(cache, f, ensure_ascii=False)
         except Exception:
             pass
+    # 输出本次 AI 用量（估算）
+    try:
+        from vlm import get_usage
+
+        u = get_usage()
+        if u["calls"]:
+            models = "、".join(f"{k}×{v}" for k, v in u["by_model"].items())
+            log.info(f"AI 用量：调用 {u['calls']} 次（{models}），"
+                     f"估算约 {u['calls'] * 1350} token（每张谱面图 ~1350）")
+        if u["failed"]:
+            log.warn(f"AI 调用失败 {u['failed']} 次（可能额度耗尽，已尝试降级）")
+    except Exception:
+        pass
     return results
 
 

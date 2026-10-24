@@ -20,7 +20,46 @@ import requests  # yt-dlp 的既有依赖，打包零额外体积
 
 # DashScope OpenAI 兼容接口
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_MODEL = "qwen3-vl-plus"   # 也可用 qwen-vl-ocr（文字/数字识别更强）
+DEFAULT_MODEL = "qwen3-vl-plus"   # 视觉能力最强；额度耗尽时自动降级
+
+# 推荐模型列表（GUI 下拉展示）：(model, 说明)
+RECOMMENDED_MODELS = [
+    ("qwen3-vl-plus", "视觉最强（默认，免费额度可能有限）"),
+    ("qwen-vl-ocr-2025-11-20", "OCR 专用（免费额度通常可用）"),
+    ("qwen-vl-ocr", "OCR 专用（稳定）"),
+    ("qwen-vl-max-latest", "视觉旗舰（需开通）"),
+    ("qwen-vl-plus-latest", "视觉增强（需开通）"),
+    ("qwen2.5-vl-72b-instruct", "旧版视觉（需开通）"),
+]
+
+# 降级链：主模型失败（额度/权限问题）时依次尝试
+MODEL_FALLBACKS = ["qwen3-vl-plus", "qwen-vl-ocr-2025-11-20", "qwen-vl-ocr"]
+
+# 本次运行用量统计（估算，供日志/界面显示）
+_USAGE = {
+    "calls": 0,          # 成功调用次数
+    "failed": 0,         # 失败次数
+    "by_model": {},      # 各模型成功次数
+    "est_tokens": 0,     # 估算消耗 token（输入+输出）
+}
+
+
+def get_usage() -> dict:
+    """返回本次运行的用量统计（副本）。"""
+    return {"calls": _USAGE["calls"], "failed": _USAGE["failed"],
+            "by_model": dict(_USAGE["by_model"]),
+            "est_tokens": _USAGE["est_tokens"]}
+
+
+def reset_usage() -> None:
+    """重置用量统计（每次处理开始时调用）。"""
+    _USAGE.update({"calls": 0, "failed": 0, "by_model": {}, "est_tokens": 0})
+
+
+def estimate_image_tokens(width: int, height: int) -> int:
+    """粗略估算一张图编码后的 token 数（按面积 / 750 像素² 逐块计）。"""
+    tiles = max(1, (width * height) // (750 * 750))
+    return tiles * 1000 + 200
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vlm_config.json")
 
@@ -147,10 +186,9 @@ def _extract_json(text: str) -> dict:
         return {"raw": text, "error": "json_parse_failed"}
 
 
-def _call(api_key: str | None, model: str, prompt: str, image_data_url: str,
-          timeout: float) -> dict:
-    """调用 DashScope OpenAI 兼容接口（requests，零额外依赖）。"""
-    key = _require_key(api_key)
+def _post_once(key: str, model: str, prompt: str, image_data_url: str,
+               timeout: float) -> dict:
+    """单次请求（不做降级），失败抛 RuntimeError。"""
     resp = requests.post(
         f"{DASHSCOPE_BASE_URL}/chat/completions",
         headers={
@@ -174,6 +212,15 @@ def _call(api_key: str | None, model: str, prompt: str, image_data_url: str,
         raise RuntimeError("API Key 无效或已过期（HTTP 401）")
     if resp.status_code == 429:
         raise RuntimeError("调用频率过高或额度用尽（HTTP 429）")
+    if resp.status_code == 403:
+        code = ""
+        try:
+            code = str(resp.json().get("error", {}).get("code", ""))
+        except Exception:
+            pass
+        if "FreeTierOnly" in code or "AllocationQuota" in code:
+            raise RuntimeError(f"模型 {model} 免费额度已用尽（403 {code}）")
+        raise RuntimeError(f"模型 {model} 无权访问（403 {code}）")
     resp.raise_for_status()
     data = resp.json()
     try:
@@ -181,6 +228,36 @@ def _call(api_key: str | None, model: str, prompt: str, image_data_url: str,
     except (KeyError, IndexError) as e:
         raise RuntimeError(f"接口返回格式异常: {str(data)[:300]}") from e
     return _extract_json(text)
+
+
+def _call(api_key: str | None, model: str, prompt: str, image_data_url: str,
+          timeout: float) -> dict:
+    """调用 DashScope OpenAI 兼容接口，失败自动降级到备选模型。
+
+    降级链：指定模型 → MODEL_FALLBACKS 中其它模型。
+    只有"额度/权限/格式"错误才降级；Key 无效（401）直接抛错。
+    """
+    key = _require_key(api_key)
+    candidates = [model]
+    for fb in MODEL_FALLBACKS:
+        if fb not in candidates:
+            candidates.append(fb)
+
+    last_err: Exception | None = None
+    for m in candidates:
+        try:
+            result = _post_once(key, m, prompt, image_data_url, timeout)
+            _USAGE["calls"] += 1
+            _USAGE["by_model"][m] = _USAGE["by_model"].get(m, 0) + 1
+            return result
+        except RuntimeError as e:
+            msg = str(e)
+            if "401" in msg or "API Key 无效" in msg:
+                raise
+            last_err = e
+            continue
+    _USAGE["failed"] += 1
+    raise RuntimeError(f"所有模型均调用失败（最后错误：{last_err}）")
 
 
 def _array_to_data_url(img) -> str:

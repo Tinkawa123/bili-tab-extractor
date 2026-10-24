@@ -454,14 +454,26 @@ class ApiSettingsDialog(QDialog):
         self.key_edit.setText(old)
         lay.addWidget(self.key_edit)
 
-        lay.addWidget(QLabel("模型（默认 qwen3-vl-plus，视觉能力更强）："))
-        self.model_edit = QLineEdit()
-        self.model_edit.setText(load_model())
-        lay.addWidget(self.model_edit)
+        lay.addWidget(QLabel("模型（可下拉选择推荐模型，也可手动输入）："))
+        from PySide6.QtWidgets import QComboBox
+        from vlm import RECOMMENDED_MODELS
+        self.model_combo = QComboBox()
+        self.model_combo.setEditable(True)   # 允许手动输入非列表模型
+        for code, desc in RECOMMENDED_MODELS:
+            self.model_combo.addItem(f"{code}    （{desc}）", code)
+        cur = load_model()
+        # 定位到当前模型（找不到则手动填入）
+        idx = self.model_combo.findData(cur)
+        if idx >= 0:
+            self.model_combo.setCurrentIndex(idx)
+        else:
+            self.model_combo.setEditText(cur)
+        lay.addWidget(self.model_combo)
 
         hint = QLabel(
             "Key 保存在 bili_tab_extractor/vlm_config.json（已 gitignore，不会上传）。\n"
-            "申请地址：https://bailian.console.aliyun.com → API-KEY 管理")
+            "申请地址：https://bailian.console.aliyun.com → API-KEY 管理\n"
+            "提示：主模型额度耗尽（403）时会自动降级到 qwen-vl-ocr 系列，不会中断。")
         hint.setObjectName("hint")
         lay.addWidget(hint)
 
@@ -482,12 +494,21 @@ class ApiSettingsDialog(QDialog):
         btns.addWidget(self.save_btn)
         lay.addLayout(btns)
 
+    def _current_model(self) -> str:
+        """当前选中的模型 code（下拉项取 data，手动输入取文本）。"""
+        text = self.model_combo.currentText().strip()
+        # 下拉项文本格式是 "code    （说明）"，提取 code
+        code = self.model_combo.currentData()
+        if code and text.startswith(str(code)):
+            return str(code)
+        return text.split("    ")[0].strip()
+
     def _save(self):
         key = self.key_edit.text().strip()
         if not key:
             QMessageBox.warning(self, "提示", "请填写 API Key")
             return
-        save_api_key(key, self.model_edit.text().strip() or None)
+        save_api_key(key, self._current_model() or None)
         self.accept()
 
     def _test(self):
@@ -495,18 +516,33 @@ class ApiSettingsDialog(QDialog):
         if not key:
             self.test_label.setText("请先填写 API Key")
             return
+        model = self._current_model()
         self.test_label.setText("测试中…")
         self.test_btn.setEnabled(False)
         try:
             import requests
             from vlm import DASHSCOPE_BASE_URL
-            r = requests.get(f"{DASHSCOPE_BASE_URL}/models",
-                             headers={"Authorization": f"Bearer {key}"}, timeout=20)
+            # 实际测"当前模型"能否调用（比 /models 列表更准）
+            r = requests.post(
+                f"{DASHSCOPE_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {key}",
+                         "Content-Type": "application/json"},
+                json={"model": model,
+                      "messages": [{"role": "user", "content": "hi"}],
+                      "max_tokens": 5},
+                timeout=25)
             if r.status_code == 200:
-                n = len(r.json().get("data", []))
-                self.test_label.setText(f"连接成功（可用模型 {n} 个）")
+                self.test_label.setText(f"连接成功（模型 {model} 可用）")
+            elif r.status_code == 403:
+                code = ""
+                try:
+                    code = str(r.json().get("error", {}).get("code", ""))
+                except Exception:
+                    pass
+                self.test_label.setText(
+                    f"模型 {model} 额度/权限不足（403 {code}）—— 保存后处理时会自动降级到 qwen-vl-ocr")
             else:
-                self.test_label.setText(f"失败：HTTP {r.status_code}（Key 无效或额度问题）")
+                self.test_label.setText(f"失败：HTTP {r.status_code}")
         except Exception as e:
             self.test_label.setText(f"失败：{e}")
         finally:
