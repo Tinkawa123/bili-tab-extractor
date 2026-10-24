@@ -71,9 +71,13 @@ def download_video(url: str, out_path: str, max_height: int = 720,
 
     ff_exe = _ffmpeg_exe_path()
     ydl_opts = {
+        # 逐级放宽：部分 B 站视频没有"带高度信息的独立视频流"，
+        # 严格匹配会报 "Requested format is not available"。
         "format": (
             f"bestvideo[height<={max_height}]+bestaudio/"
-            f"best[height<={max_height}]/best"
+            f"bestvideo+bestaudio/"
+            f"best[height<={max_height}]/"
+            f"bv*+ba/b"
         ),
         "outtmpl": out_path,
         "merge_output_format": "mp4",
