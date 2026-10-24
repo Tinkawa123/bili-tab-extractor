@@ -144,12 +144,49 @@ def bgr_to_pixmap(img: np.ndarray, max_w: int, max_h: int) -> QPixmap:
     return QPixmap.fromImage(qimg)
 
 
+class GuiLogStream:
+    """把 print 输出（逐行）转发到 GUI 日志框。
+
+    PyInstaller --windowed 下 sys.stdout 是无效流，pipeline 里的
+    log.step/info/warn（都是 print）会全部丢失；处理期间重定向到本类，
+    日志就能实时显示在界面里（抽帧数量/谱面类型/VLM 识别小节号/拼接/去重等）。
+    """
+
+    def __init__(self, emit):
+        self._emit = emit
+        self._buf = ""
+
+    def write(self, s):
+        try:
+            self._buf += s
+            while "\n" in self._buf:
+                line, self._buf = self._buf.split("\n", 1)
+                line = line.rstrip()
+                if line:
+                    self._emit(line)
+        except Exception:
+            pass
+        return len(s)
+
+    def flush(self):
+        if self._buf.strip():
+            try:
+                self._emit(self._buf.rstrip())
+            except Exception:
+                pass
+        self._buf = ""
+
+    def isatty(self):
+        return False
+
+
 class Worker(QThread):
     """后台处理线程（QThread + Signal）。"""
 
     progress = Signal(str, float)
     done = Signal(object, bool)      # (PipelineResult, auto)
     error = Signal(str)
+    log_msg = Signal(str)            # pipeline 内部日志（print 转发）
 
     def __init__(self, url, auto, interval, max_height, title, work_dir, parent=None):
         super().__init__(parent)
@@ -161,6 +198,12 @@ class Worker(QThread):
         self.work_dir = work_dir
 
     def run(self):
+        import sys as _sys
+
+        stream = GuiLogStream(self.log_msg.emit)
+        old_out, old_err = _sys.stdout, _sys.stderr
+        _sys.stdout = stream
+        _sys.stderr = stream
         try:
             result = process(
                 url=self.url if re.match(r"^https?://", self.url) else None,
@@ -178,6 +221,9 @@ class Worker(QThread):
             self.error.emit(f"处理被终止: {e}")
         except Exception as e:
             self.error.emit(str(e))
+        finally:
+            stream.flush()
+            _sys.stdout, _sys.stderr = old_out, old_err
 
 
 class MainWindow(QMainWindow):
@@ -348,6 +394,7 @@ class MainWindow(QMainWindow):
         self.worker.progress.connect(self._on_progress)
         self.worker.done.connect(self._on_done)
         self.worker.error.connect(self._on_error)
+        self.worker.log_msg.connect(self._log)   # pipeline 内部日志 → 界面
         self.worker.start()
 
     def _cancel(self):
