@@ -90,3 +90,5 @@ testset/report/
 testset/baseline/previews/
 testset/_smoke_manifest.json
 
+dist_v6/
+build_v6/
