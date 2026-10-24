@@ -92,7 +92,8 @@ def _process_horizontal(crop_imgs, api_key, work_dir, p, use_vlm=True,
     优先：VLM 读每帧小节号 → 按小节号去重、按小节号排序（最可靠）。
     回退：像素位移分段拼接 → 切段。
     """
-    from stitch import crop_screen_top, estimate_shift, split_wide_image, stitch_horizontal
+    from stitch import (crop_screen_top, estimate_shift, is_transition_frame,
+                        normalize_heights, split_wide_image, stitch_horizontal)
 
     # 先裁掉每帧顶部的演奏画面
     cleaned = []
@@ -101,6 +102,20 @@ def _process_horizontal(crop_imgs, api_key, work_dir, p, use_vlm=True,
             cleaned.append(crop_screen_top(img, thresholds=thresholds))
         except Exception:
             cleaned.append(img)
+
+    # 跳过片头淡入/片尾淡出/黑屏等过场帧：它们不含谱面，参与横向拼接会在
+    # 长图里留下整块黑色（本视频 frame0、frame89-94 就是纯黑/近黑）。
+    filtered = [c for c in cleaned if not is_transition_frame(c)]
+    if filtered and len(filtered) < len(cleaned):
+        log.info(f"跳过 {len(cleaned) - len(filtered)} 张过场帧（淡入/淡出/黑屏）")
+        cleaned = filtered
+
+    # 统一高度：crop_screen_top() 按每帧演奏画面的实际高度裁剪（有的裁 28px、
+    # 有的裁 90px），同一视频的帧高会从 137px 到 199px 不等。VLM 读小节号、
+    # 相位相关估位移、横向拼接都要求各帧形状一致，否则 numpy 报
+    # "could not broadcast input array from shape (199,1270,3) into
+    #  shape (137,1270,3)"。这里统一到"多数帧高度"（底部对齐，不缩放内容）。
+    cleaned = normalize_heights(cleaned)
 
     if use_vlm and api_key:
         try:

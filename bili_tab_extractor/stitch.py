@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import os
+from collections import Counter
 
 import cv2
 import numpy as np
@@ -24,6 +25,91 @@ A4_WIDTH, A4_HEIGHT = 2480, 3508
 MARGIN = 100
 GAP = 40  # 同一页内相邻谱图间距
 MIN_SEG_HEIGHT = 24     # 切出的片段最小高度
+
+
+# ---------- 形状安全工具 ----------
+#
+# 背景：crop_screen_top() 按"顶部演奏画面的实际高度"逐帧裁剪，同一视频的
+# 不同帧可能被裁掉 28px 或 90px，导致裁剪帧高度 137px / 199px 不等。
+# 任何"按 images[0] 建画布、再逐帧贴图"的代码都会因此报
+#   could not broadcast input array from shape (199,1270,3)
+#   into shape (137,1270,3)
+# 下面这组工具把所有拼接/比较前的帧统一到同一形状（不缩放内容）。
+
+
+def _common_height(heights: list[int]) -> int:
+    """从一组高度中挑"代表高度"：多数帧的高度（平票取接近中位数的）。"""
+    if not heights:
+        return 0
+    counts = Counter(int(h) for h in heights)
+    best_n = max(counts.values())
+    cands = [h for h, n in counts.items() if n == best_n]
+    if len(cands) == 1:
+        return cands[0]
+    med = float(np.median(heights))
+    # 距离中位数最近者优先；再平票取较大者（尽量保留内容，不裁过头）
+    return max(cands, key=lambda h: (-abs(h - med), h))
+
+
+def _fit_size(img: np.ndarray, w: int, h: int) -> np.ndarray:
+    """把图像调整到 (w, h)，用于形状安全对齐。
+
+    - 宽度不同：水平缩放（高度不变）
+    - 高度不同：底部对齐（裁掉顶部多余 / 顶部补白）
+      crop_screen_top() 只从顶部裁演奏画面，谱面内容在底部对齐，
+      所以底部对齐不会让谱线错位。
+    """
+    if img.ndim != 3 or img.shape[2] != 3:
+        # 灰度/4 通道统一成 BGR，避免下游 cvtColor 报通道数错误
+        if img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        elif img.ndim == 3 and img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        elif img.ndim == 3 and img.shape[2] == 1:
+            img = cv2.cvtColor(img[:, :, 0], cv2.COLOR_GRAY2BGR)
+    ih, iw = img.shape[:2]
+    if iw != w:
+        interp = cv2.INTER_AREA if iw > w else cv2.INTER_LINEAR
+        img = cv2.resize(img, (w, ih), interpolation=interp)
+        ih = img.shape[0]
+    if ih == h:
+        return img
+    if ih > h:
+        return np.ascontiguousarray(img[ih - h:])
+    pad = np.full((h - ih, w) + img.shape[2:], 255, np.uint8)
+    return np.vstack([pad, img])
+
+
+def normalize_heights(images: list[np.ndarray],
+                      target_h: int | None = None) -> list[np.ndarray]:
+    """把一组帧统一到同一高度（宽度不变），返回形状安全的列表。
+
+    目标高度默认取"多数帧的高度"；高于目标裁掉顶部多余（演奏画面），
+    低于目标在顶部补白（底部对齐，宁可留白也不丢内容）。
+    不缩放高度，因此横向拼接依赖的 x 偏移量保持有效。
+    全部高度一致时原样返回（不产生多余拷贝）。
+    """
+    if not images:
+        return []
+    heights = [im.shape[0] for im in images]
+    if target_h is None:
+        target_h = _common_height(heights)
+    if not target_h or all(h == target_h for h in heights):
+        return list(images)
+    out = [_fit_size(im, im.shape[1], target_h) for im in images]
+    log.info(f"帧高度不一致 {sorted(set(heights))} → 统一为 {target_h}px")
+    return out
+
+
+def normalize_shapes(images: list[np.ndarray]) -> list[np.ndarray]:
+    """统一高度 + 宽度（多数帧尺寸），返回形状完全一致的列表。"""
+    imgs = normalize_heights(images)
+    widths = [im.shape[1] for im in imgs]
+    w = int(np.median(widths))
+    if any(x != w for x in widths):
+        log.info(f"帧宽度不一致 {sorted(set(widths))} → 统一为 {w}px")
+        imgs = [_fit_size(im, w, im.shape[0]) for im in imgs]
+    return imgs
 
 
 # ---------- 滚动拼接 ----------
@@ -55,11 +141,34 @@ def stitch_scrolling(crops: list[str], shifts: list[float],
     if any(i is None for i in imgs):
         log.warn("部分裁剪图读取失败，跳过滚动拼接")
         return []
-    h, w = imgs[0].shape[:2]
+    # 形状安全：帧高度可能因"顶部演奏画面逐帧裁剪"而不一致，宽度也可能不同。
+    # 统一到多数帧高度：更高的帧裁掉顶部多余（内容底部对齐），更矮的帧记录
+    # 顶部补白行数、贴图时按内容底边对齐且只写真实内容，避免白边覆盖已拼内容。
+    heights = [im.shape[0] for im in imgs]
+    target_h = _common_height(heights)
+    w = int(np.median([im.shape[1] for im in imgs]))
+    if len(set(heights)) > 1:
+        log.info(f"滚动拼接：帧高度不一致 {sorted(set(heights))} → 按 {target_h}px 对齐")
+    frames: list[tuple[np.ndarray, int]] = []
+    for im in imgs:
+        if im.shape[1] != w:
+            im = _fit_size(im, w, im.shape[0])
+        pad_top = max(0, target_h - im.shape[0])
+        if im.shape[0] > target_h:
+            im = np.ascontiguousarray(im[im.shape[0] - target_h:])
+        frames.append((im, pad_top))
+    h = target_h
+
+    def paste(dst: np.ndarray, src: np.ndarray, y: int) -> None:
+        """把帧贴到 dst 的第 y 行起（只写真实内容，不写补白区）。"""
+        sh = min(src.shape[0], dst.shape[0] - y)
+        if y >= 0 and sh > 0:
+            dst[y:y + sh] = src[:sh]
 
     segments: list[np.ndarray] = []
-    canvas = imgs[0].copy()
-    top = 0  # 当前帧内容顶部在画布中的 y 坐标
+    canvas = np.full((h, w, 3), 255, dtype=np.uint8)
+    paste(canvas, frames[0][0], frames[0][1])
+    top = 0  # 当前帧"窗口顶部"在画布中的 y 坐标
 
     def flush():
         nonlocal canvas
@@ -71,19 +180,23 @@ def stitch_scrolling(crops: list[str], shifts: list[float],
             if seg.shape[0] > MIN_SEG_HEIGHT:
                 segments.append(seg.copy())
 
-    for i in range(1, len(imgs)):
+    for i in range(1, len(frames)):
         dy = shifts[i]
-        cur = imgs[i]
+        cur, pad_top = frames[i]
         # 位移突变（方向反转或跳跃）=> 翻页/段落切换，结束当前段
         if dy * mean_dir < -2 or abs(dy) > h * 0.4:
             flush()
-            canvas = imgs[i].copy()
+            canvas = np.full((h, w, 3), 255, dtype=np.uint8)
+            paste(canvas, cur, pad_top)
             top = 0
             continue
         if abs(dy) < 1:
             continue  # 几乎无位移（光标在扫），跳过
 
-        top += dy  # 当前帧顶部在画布中的位置（dy 负 = 内容上滚，顶部上移）
+        # 内容位移与画布 y 方向相反：dy<0（内容上滚 = 视野下移）时新帧内容
+        # 在下方，窗口顶部 y 增大；旧实现 top += dy 会把帧序上下颠倒且
+        # 造成 2×dy 的错位（形状 bug 修掉后才暴露）。
+        top -= dy
         top_int = int(round(top))
 
         if top_int < 0:
@@ -95,7 +208,7 @@ def stitch_scrolling(crops: list[str], shifts: list[float],
         if need > canvas.shape[0]:
             ext = np.full((need - canvas.shape[0] + h, w, 3), 255, dtype=np.uint8)
             canvas = np.vstack([canvas, ext])
-        canvas[top_int:top_int + h] = cur
+        paste(canvas, cur, top_int + pad_top)
 
     flush()
     log.success(f"滚动拼接完成：{len(segments)} 段")
@@ -106,7 +219,11 @@ def estimate_shift(a: np.ndarray, b: np.ndarray) -> tuple[float, float, float]:
     """相位相关估计 b 相对 a 的位移 (dx, dy) 与响应强度。
 
     返回 (dx, dy, response)：dx>0 表示内容向右移动，dy>0 表示向下移动。
+    两帧形状不一致时（crop_screen_top 裁掉不同高度）先对齐到 a 的形状，
+    否则 cv2/相位相关会因尺寸不同报错，位移被上游静默当成 0。
     """
+    if a.shape[:2] != b.shape[:2]:
+        b = _fit_size(b, a.shape[1], a.shape[0])
     ga = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32)
     gb = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY).astype(np.float32)
     # 加 Hann 窗减少边缘效应
@@ -149,6 +266,21 @@ def detect_scroll_direction(images: list[np.ndarray], sample: int = 12) -> str:
     return "rows"
 
 
+def is_transition_frame(img: np.ndarray, dark_thresh: int = 128,
+                        dark_frac: float = 0.85, max_std: float = 32.0) -> bool:
+    """是否"近似全黑且低反差"的过场帧（片头淡入 / 片尾淡出 / 黑屏）。
+
+    谱面帧即使暗色主题也有明显反差（灰度标准差大）；淡入淡出/黑屏帧
+    暗像素占比 >85% 且标准差很小。这类帧不含谱面，参与横向拼接只会在
+    长图里留下黑色色块，应跳过。
+    """
+    if img is None or img.size == 0:
+        return True
+    gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return (float((gray < dark_thresh).mean()) > dark_frac
+            and float(gray.std()) < max_std)
+
+
 def crop_screen_top(img: np.ndarray, max_frac: float = 0.4,
                     thresholds: dict | None = None) -> np.ndarray:
     """裁掉图片顶部的演奏画面残留。
@@ -189,13 +321,21 @@ def stitch_horizontal(images: list[np.ndarray], shifts: list[float],
                       max_seg_width: int = 60000) -> list[np.ndarray]:
     """横向滚动型谱面拼接（支持回滚：按位移方向分段拼接）。
 
-    images: 各帧裁剪图（同尺寸）
+    images: 各帧裁剪图（允许高度不一致——crop_screen_top 逐帧裁掉不同高度
+            的顶部演奏画面，内部会统一到"多数帧高度"后再贴图）
     shifts: shifts[i] = 第 i 帧相对第 i-1 帧的水平位移（>0 内容右移）
     返回拼接段列表（每段是一张横向长图）；无有效位移时返回 []。
     """
     if len(images) < 2:
         return []
-    h, w = images[0].shape[:2]
+    # 形状安全：不同帧高度可能不等（如 137px / 199px），取"多数帧高度"
+    # 作为画布高度；宽度取中位数（正常同宽，仅作兜底）。
+    heights = [im.shape[0] for im in images]
+    target_h = _common_height(heights)
+    w = int(np.median([im.shape[1] for im in images]))
+    if len(set(heights)) > 1:
+        log.info(f"横向拼接：帧高度不一致 {sorted(set(heights))} → "
+                 f"按 {target_h}px 对齐（底部对齐，不缩放内容）")
 
     # 清理位移：无位移帧跳过；混叠修正（|dx| 接近整幅宽度时取等价短位移）
     valid: list[float | None] = [None]
@@ -245,17 +385,32 @@ def stitch_horizontal(images: list[np.ndarray], shifts: list[float],
                     acc += sv
             offsets[frames[k]] = acc
         xs = list(offsets.values())
-        base = -min(xs)
+        # 内容位移与画布坐标方向相反：dx>0（内容右移 = 视野左移）时，
+        # 第 i 帧的世界起点 S_i = S_0 - Σdx，画布坐标 x_i = max(Σdx) - Σdx。
+        # 旧实现用 base + offsets[i]（base=-min），会把帧序左右颠倒并
+        # 造成 2×dx 的错位——恰好在形状 bug 修掉后才暴露出来。
+        base = max(xs)
         total_w = int(max(xs) - min(xs)) + w
         if total_w > max_seg_width:
             log.warn(f"横向段过长（{total_w}px），跳过")
             continue
-        canvas = np.full((h, total_w, 3), 255, dtype=np.uint8)
+        canvas = np.full((target_h, total_w, 3), 255, dtype=np.uint8)
         for i in frames:
-            x = int(round(base + offsets[i]))
+            x = int(round(base - offsets[i]))
             x2 = min(total_w, x + w)
-            if 0 <= x < total_w and x2 > x:
-                canvas[:, x:x2] = images[i][:, :x2 - x]
+            if not (0 <= x < total_w and x2 > x):
+                continue
+            src = images[i]
+            # 高度统一：高于目标裁掉顶部多余（演奏画面在顶部，内容底部对齐）；
+            # 低于目标不补白——底部对齐贴入，避免白边覆盖已拼好的内容。
+            if src.shape[0] > target_h:
+                src = src[src.shape[0] - target_h:]
+            sh = min(src.shape[0], target_h)
+            sw = min(src.shape[1], x2 - x)   # 宽度兜底：不允许超出画布
+            if sh <= 0 or sw <= 0:
+                continue
+            y0 = target_h - sh
+            canvas[y0:y0 + sh, x:x + sw] = src[:sh, :sw]
         out.append(canvas)
 
     if out:
@@ -269,8 +424,15 @@ def split_wide_image(img: np.ndarray, max_section_w: int = 2400,
 
     max_section_w: 每段最大宽度（超过则强制切）
     blank_ratio: 空白列判定（该列内容像素占比低于此值算空白）
+
+    注意：切段只沿宽度方向进行（同一张图的高度不变），所以各段高度天然
+    一致；这里仍做空图/退化尺寸的保护，避免把 0 高/0 宽的段传给 PDF。
     """
+    if img is None or img.size == 0 or img.ndim != 3 or img.shape[2] != 3:
+        return []
     h, w = img.shape[:2]
+    if h <= 0 or w <= 0:
+        return []
     if w <= max_section_w:
         return [img]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -306,6 +468,8 @@ def split_long_image(img: np.ndarray, max_inner_gap: int = 25,
 
     若整图找不到分界（单行或排版紧凑），返回空列表，由调用方兜底。
     """
+    if img is None or img.size == 0 or img.ndim != 3 or img.shape[2] != 3:
+        return []
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     dark_count = (gray < 128).sum(axis=1)
     content_rows = np.where(dark_count > dark_thresh)[0]
@@ -336,8 +500,27 @@ def split_long_image(img: np.ndarray, max_inner_gap: int = 25,
 
 # ---------- PDF ----------
 
+def _to_pil(img: np.ndarray) -> Image.Image:
+    """ndarray（BGR / BGRA / 灰度）→ RGB PIL.Image（形状安全兜底）。
+
+    行片段来自切片，正常都是 3 通道 BGR；但手工传入灰度/带 alpha 的图时
+    cv2.COLOR_BGR2RGB 会因通道数不匹配报错，这里统一成 RGB 再进 PDF。
+    """
+    if img is None or img.size == 0:
+        raise RuntimeError("空图像，无法写入 PDF")
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    elif img.ndim == 3 and img.shape[2] == 4:
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+    elif img.ndim == 3 and img.shape[2] == 1:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+
 def _fit_width(img: Image.Image, target_w: int) -> Image.Image:
     w, h = img.size
+    if w <= 0 or h <= 0:
+        raise RuntimeError(f"图像尺寸非法: {w}x{h}")
     if w == target_w:
         return img
     scale = target_w / w
@@ -380,6 +563,11 @@ def images_to_pdf(images: list[Image.Image], out_path: str, title: str,
 
     count_on_page = 0
     for img in images:
+        if img is None:
+            continue
+        # 形状安全：统一 RGB（灰度/RGBA 也能安全 paste）
+        if img.mode != "RGB":
+            img = img.convert("RGB")
         img = _fit_width(img, content_w)
         iw, ih = img.size
         # 超高图（如未切分的滚动长图）等比缩到一页高
@@ -487,13 +675,13 @@ def make_pdf(crops: list[str], shifts: list[float], out_path: str, title: str,
                 for y in range(0, h, win):
                     parts.append(seg[y:y + win])
             for p in parts:
-                pil_images.append(Image.fromarray(cv2.cvtColor(p, cv2.COLOR_BGR2RGB)))
+                pil_images.append(_to_pil(p))
     if not pil_images:
         # 翻页/逐行模式：每帧一行
         for p in crops:
             img = imread(p)
             if img is not None:
-                pil_images.append(Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)))
+                pil_images.append(_to_pil(img))
 
     if not pil_images:
         raise RuntimeError("没有可输出的谱面图像")
@@ -510,12 +698,13 @@ def make_pdf_from_rows(rows: list[tuple[np.ndarray, str, int]],
     """把去重后的行片段直接竖排为 A4 PDF（行级管线）。
 
     rows: [(行BGR图, 来源, 行序号), ...]，已按视频出现顺序排列。
+    各行高度可以不同（每行只含自己的谱面内容），PDF 逐行排版不要求等高。
     """
     if not rows:
         raise RuntimeError("没有可输出的谱面行")
     log.step(f"生成 PDF（{len(rows)} 行谱面）…")
 
-    pil_images = [Image.fromarray(cv2.cvtColor(r[0], cv2.COLOR_BGR2RGB)) for r in rows]
+    pil_images = [_to_pil(r[0]) for r in rows]
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     n_pages = images_to_pdf(pil_images, out_path, title,
                             lines_per_page=rows_per_page)

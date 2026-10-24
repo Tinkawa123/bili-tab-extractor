@@ -6,13 +6,25 @@ dist/
 dist_v2/
 dist_v3/
 dist_v4/
+dist_v5/
 dist_new/
 build/
 build_v2/
 build_v3/
 build_v4/
+build_v5/
 build_new/
 *.spec
+
+# 测试/验证产物目录
+_final_out_*/
+_final_work_*/
+_reg_work_*/
+_reg2_work_*/
+_vlm_reg_work/
+_bugtest_work/
+_repro_bv*/
+testset/
 
 # 输出结果
 out/

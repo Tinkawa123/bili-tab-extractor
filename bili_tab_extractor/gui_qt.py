@@ -686,11 +686,15 @@ class ReviewWindow(QMainWindow):
                 # 像素级确认：高度对齐后比较，差异小才算"大致相同"
                 a = self.rows[i].image
                 b = self.rows[j].image
+                # 形状安全：行高/行宽可能不等（crop_screen_top 逐帧裁掉不同
+                # 高度的顶部演奏画面），统一到较小尺寸再逐像素比较，否则
+                # numpy 会报 "operands could not be broadcast together"。
                 h = min(a.shape[0], b.shape[0])
-                if h <= 0:
+                w = min(a.shape[1], b.shape[1])
+                if h <= 0 or w <= 0:
                     continue
-                a2 = a if a.shape[0] == h else cv2.resize(a, (a.shape[1], h))
-                b2 = b if b.shape[0] == h else cv2.resize(b, (b.shape[1], h))
+                a2 = a if a.shape[:2] == (h, w) else cv2.resize(a, (w, h))
+                b2 = b if b.shape[:2] == (h, w) else cv2.resize(b, (w, h))
                 diff = np.abs(a2.astype(np.int16) - b2.astype(np.int16)) > 40
                 if float(diff.mean()) < 0.05:
                     self._similar.setdefault(i, []).append(j)

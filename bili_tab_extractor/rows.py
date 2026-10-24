@@ -392,8 +392,11 @@ def dedup_rows(rows: list[tuple[np.ndarray, str, int]],
                 # 差异集中但确属不同内容），宁多勿缺。
                 h0, w0 = krow.shape[:2]
                 h1, w1 = row.shape[:2]
-                if h0 != h1:
-                    a = cv2.resize(krow, (w0, h1), interpolation=cv2.INTER_AREA)
+                if (h0, w0) != (h1, w1):
+                    # 形状安全：crop_screen_top 逐帧裁掉不同高度的顶部演奏画面，
+                    # 行片段高度可能不等（137/199px）；统一到当前行尺寸再比较，
+                    # 否则 numpy 会报广播错误（宽度不同时同样会炸）。
+                    a = cv2.resize(krow, (w1, h1), interpolation=cv2.INTER_AREA)
                     b = row
                 else:
                     a, b = krow, row
