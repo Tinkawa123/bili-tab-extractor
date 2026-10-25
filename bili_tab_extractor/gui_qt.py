@@ -275,6 +275,10 @@ class MainWindow(QMainWindow):
         hint = QLabel("自动截取谱面 · 人工核验排序 · 输出 PDF")
         hint.setObjectName("hint")
         lay.addWidget(hint)
+        # 流程引导（首次使用也知道怎么走）
+        guide = QLabel("① 输入链接  →  ② 开始处理  →  ③ 核验调整  →  ④ 确认输出")
+        guide.setObjectName("hint")
+        lay.addWidget(guide)
 
         lay.addWidget(QLabel("B站视频链接（或本地视频路径）:"))
         self.url_edit = QLineEdit()
@@ -1099,11 +1103,16 @@ class ReviewWindow(QMainWindow):
         self.preview_view = PreviewView()
         self.preview_scene = QGraphicsScene(self.preview_view)
         self.preview_view.setScene(self.preview_scene)
-        self.preview_view.setBackgroundBrush(QColor("#f0f0f0"))
+        self.preview_view.setBackgroundBrush(QColor("#f5f5f5"))
         self.preview_view.setToolTip("滚轮缩放 · 按住左键拖拽平移 · 双击全屏")
         self.preview_item = None
         self.preview_pixmap = None
         self._preview_fit_done = False
+        # 空状态提示（选中行后消失）
+        self.preview_hint = self.preview_scene.addText(
+            "点击左侧行查看大图\n\n滚轮缩放 · 按住左键拖拽平移 · 双击全屏")
+        self.preview_hint.setDefaultTextColor(QColor("#999999"))
+        self.preview_hint.setPos(30, 30)
         splitter.addWidget(self.preview_view)
         splitter.setSizes([680, 470])
 
@@ -1231,6 +1240,14 @@ class ReviewWindow(QMainWindow):
         self.undo_btn.setEnabled(bool(self._undo_stack))
         self.redo_btn.setEnabled(bool(self._redo_stack))
 
+    def _row_group_tag(self, i: int) -> str:
+        """第 i 行的组标签（A1/A2/B1…；不属于重复组返回空串）。"""
+        for gi, g in enumerate(self._all_dup_groups()):
+            if i in g:
+                letter = chr(ord("A") + gi) if gi < 26 else "?"
+                return f"[{letter}{g.index(i) + 1}] "
+        return ""
+
     def _row_item_content(self, i: int):
         """第 i 行列表项内容：(缩略图, 文本, 背景色|None, tooltip|None)。"""
         row = self.rows[i]
@@ -1239,7 +1256,10 @@ class ReviewWindow(QMainWindow):
         if pm is None:
             pm = bgr_to_pixmap(row.image, THUMB_W, THUMB_H)
             self._thumb_cache[key] = pm
-        text = f"第 {i + 1} 行   {row.image.shape[1]}×{row.image.shape[0]}   t={row.time:.0f}s"
+        # 组标签（A1/A2/B1…）便于一眼看出同组
+        tag = self._row_group_tag(i)
+        text = (f"{tag}第 {i + 1} 行   {row.image.shape[1]}×{row.image.shape[0]}   "
+                f"t={row.time:.0f}s")
         # AI 识别内容摘要
         a = self._ai_analyses.get(i) if self._ai_done else None
         if a:
@@ -1418,7 +1438,7 @@ class ReviewWindow(QMainWindow):
             tip = f"第 {idx + 1} 行"
         self._nav_base_color[idx] = color
         btn = QPushButton()
-        btn.setFixedSize(16, 16)
+        btn.setFixedSize(20, 20)
         btn.setToolTip(tip)
         btn.setProperty("row_idx", int(idx))
         btn.setProperty("group_idx", int(gi))
@@ -1442,6 +1462,9 @@ class ReviewWindow(QMainWindow):
         g = self._nav_group_rows[gi]
         self._update_keep_first_btn()
         self._highlight_nav(g[0] if g else -1)
+        # 预览组首行（右侧大图不再是空白）
+        if g and 0 <= g[0] < len(self.rows):
+            self._set_preview(self.rows[g[0]].image)
 
     def _clear_active_group(self):
         """取消激活组（隐藏浮动条）。"""
@@ -1457,11 +1480,9 @@ class ReviewWindow(QMainWindow):
         if len(g) < 2:
             self.float_bar.setVisible(False)
             return
-        rows_txt = f"第 {g[0] + 1} 行"
-        if len(g) > 1:
-            rows_txt = f"第 {g[0] + 1}、{g[0] + 2}" + (
-                f"…{g[-1] + 1}" if len(g) > 2 else "") + " 行"
-        self.float_label.setText(f"重复组 {self._active_group + 1}：{rows_txt}（{len(g)} 行）")
+        rows_txt = f"第 {g[0] + 1}-{g[-1] + 1} 行" if len(g) > 1 else f"第 {g[0] + 1} 行"
+        letter = chr(ord("A") + self._active_group) if self._active_group < 26 else "?"
+        self.float_label.setText(f"{letter} 组 · {rows_txt}（共 {len(g)} 行）")
         self.keep_first_btn.setText(f"保留第一个（删其余 {len(g) - 1} 行）")
         self.float_bar.setVisible(True)
         # 有多个组时显示批量按钮
