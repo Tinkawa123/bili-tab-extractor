@@ -24,9 +24,13 @@ DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_MODEL = "qwen3-vl-plus"   # 视觉能力最强；额度耗尽时自动降级
 
 # 推荐模型列表（GUI 下拉展示）：(model, 说明)
+# 说明基于本机实测（2026-10）：qwen3-vl-plus 视觉最强但免费额度易耗尽；
+# qwen-vl-ocr-2025-11-20 歌词/和弦识别均衡（推荐备用首选）；
+# qwen3.5-ocr 和弦更细但歌词识别弱；其余需开通权限。
 RECOMMENDED_MODELS = [
-    ("qwen3-vl-plus", "视觉最强（默认，免费额度可能有限）"),
-    ("qwen-vl-ocr-2025-11-20", "OCR 专用（免费额度通常可用）"),
+    ("qwen3-vl-plus", "视觉最强（默认，免费额度有限，可能 403 额度耗尽）"),
+    ("qwen-vl-ocr-2025-11-20", "OCR 专用（歌词/和弦均衡，推荐备用）"),
+    ("qwen3.5-ocr", "新版 OCR（和弦更细，歌词识别弱）"),
     ("qwen-vl-ocr", "OCR 专用（稳定）"),
     ("qwen-vl-max-latest", "视觉旗舰（需开通）"),
     ("qwen-vl-plus-latest", "视觉增强（需开通）"),
@@ -34,7 +38,7 @@ RECOMMENDED_MODELS = [
 ]
 
 # 降级链：主模型失败（额度/权限问题）时依次尝试
-MODEL_FALLBACKS = ["qwen3-vl-plus", "qwen-vl-ocr-2025-11-20", "qwen-vl-ocr"]
+MODEL_FALLBACKS = ["qwen-vl-ocr-2025-11-20", "qwen-vl-ocr", "qwen3.5-ocr"]
 
 # 本次运行用量统计（估算，供日志/界面显示）
 _USAGE = {
