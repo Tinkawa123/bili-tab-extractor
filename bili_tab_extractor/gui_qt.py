@@ -234,6 +234,20 @@ class Worker(QThread):
             _sys.stdout, _sys.stderr = old_out, old_err
 
 
+def _app_icon():
+    """加载 App 图标（打包后从 _MEIPASS，源码模式从包目录）。"""
+    import sys as _sys
+    try:
+        base = getattr(_sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+        for name in ("icon.png", "icon.ico"):
+            p = os.path.join(base, name)
+            if os.path.isfile(p):
+                return QIcon(p)
+    except Exception:
+        pass
+    return None
+
+
 class MainWindow(QMainWindow):
     """主窗口。"""
 
@@ -246,6 +260,9 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"B站吉他谱提取器 (构建 {BUILD_TIME})")
         except Exception:
             self.setWindowTitle("B站吉他谱提取器")
+        _ic = _app_icon()
+        if _ic is not None:
+            self.setWindowIcon(_ic)
         self.resize(700, 560)
         self.worker: Worker | None = None
         self.result: PipelineResult | None = None
@@ -2121,6 +2138,9 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")  # 跨平台一致的现代样式
     app.setStyleSheet(QSS)
+    _ic = _app_icon()
+    if _ic is not None:
+        app.setWindowIcon(_ic)   # 全局图标（任务栏/窗口）
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

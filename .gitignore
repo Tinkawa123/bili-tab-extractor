@@ -103,3 +103,15 @@ build_v10/
 dist_v11/
 build_v11/
 _user_test_shots/
+promo/icons/
+_exe_icon.png
+
+# promo 临时/生成物（保留脚本与设计稿，忽略浏览器配置和补丁临时文件）
+promo/_chrome_profile/
+promo/_test/
+promo/__pycache__/
+promo/icons/
+promo/out/
+promo/_jb_*.py
+promo/_patch*.py
+promo/_s*.txt
