@@ -1,117 +1,55 @@
-# 依赖（用 requirements.txt 安装，不提交）
+# ===== 依赖（用 requirements.txt 安装，不提交） =====
 pylibs/
 
-# 打包产物
+# ===== 打包产物 =====
 dist/
-dist_v2/
-dist_v3/
-dist_v4/
-dist_v5/
-dist_new/
 build/
-build_v2/
-build_v3/
-build_v4/
-build_v5/
-build_new/
 *.spec
 
-# 测试/验证产物目录
-_final_out_*/
-_final_work_*/
-_reg_work_*/
-_reg2_work_*/
-_vlm_reg_work/
-_bugtest_work/
-_repro_bv*/
-testset/
-
-# 输出结果
+# ===== 输出结果（PDF/行图） =====
 out/
 
-# 测试视频/大文件
+# ===== 测试视频 / 大文件 =====
 *.mp4
 *.avi
 *.mkv
 *.mov
+test_videos/
 
-# 临时工作目录
+# ===== 临时工作目录（程序运行残留） =====
 _gui_work_*/
 _bili_tab_work_*/
+_runtime_tmp/
 _smoke_work/
 _*_work/
+_*_work_*/
+_*_out/
+_*_tmp/
 
-# Python
+# ===== 测试 / 验证产物 =====
+_test/
+_final_*/
+_reg_*/
+_vlm_*/
+_ai_out/
+_look/
+_user_test_shots/
+testset/
+check_*.py
+
+# ===== promo（宣传视频资产，另一个 agent 在用，本地保留不上传） =====
+promo/
+
+# ===== Python =====
 __pycache__/
 *.pyc
 *.pyo
 
-# 本地证书（个人环境）
+# ===== 本地环境 / 凭据（绝不提交） =====
 cacert.pem
-
-# 构建信息（打包时自动生成）
+bili_tab_extractor/vlm_config.json
 bili_tab_extractor/_build_info.py
 
-# 参考的开源项目（本地保留学习用，不上传 GitHub）
+# ===== 参考的开源项目（本地学习用） =====
 repo_rohin/
 repo_marcelpanse/
-
-# VLM API Key 配置（敏感凭据，绝不提交）
-bili_tab_extractor/vlm_config.json
-
-# 测试产物（AI 输出、临时抽帧、诊断脚本）
-_ai_out/
-_vlm_rec_rows/
-_vlm_rec_work/
-_gui_full_work/
-_gui_work_*/
-_look/
-_runtime_tmp/
-/check_*.py
-
-# 测试运行临时工作目录（各种前缀变体，必须全覆盖）
-_final_work_*/
-_tt_work_*/
-_chk_*/
-_scr_work_*/
-_scr_out_*/
-_hz_*/
-_fuji_*/
-_nav_*/
-_type_work_*/
-_*_work_*/
-_*_work/
-
-# 测试集产物（视频/缓存/运行中间文件太大，不提交；只提交 manifest 和脚本）
-testset/videos/
-testset/cache/
-testset/work/
-testset/report/
-testset/baseline/previews/
-testset/_smoke_manifest.json
-
-dist_v6/
-build_v6/
-dist_v7/
-build_v7/
-dist_v8/
-build_v8/
-dist_v9/
-build_v9/
-dist_v10/
-build_v10/
-dist_v11/
-build_v11/
-_user_test_shots/
-promo/icons/
-_exe_icon.png
-
-# promo ��ʱ/����������ű�����Ƹ壬������������úͲ�����ʱ�ļ���
-promo/_chrome_profile/
-promo/_test/
-promo/__pycache__/
-promo/icons/
-promo/out/
-promo/_jb_*.py
-promo/_patch*.py
-promo/_s*.txt
