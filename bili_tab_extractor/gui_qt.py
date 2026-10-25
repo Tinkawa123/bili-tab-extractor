@@ -987,11 +987,12 @@ class ReviewWindow(QMainWindow):
         top.addWidget(self.redo_btn)
         lay.addLayout(top)
 
-        # 快捷键：Ctrl+Z 撤销 / Ctrl+Y（或 Ctrl+Shift+Z）重做
+        # 快捷键：Ctrl+Z 撤销 / Ctrl+Y（或 Ctrl+Shift+Z）重做 / Delete 删除
         from PySide6.QtGui import QKeySequence, QShortcut
         QShortcut(QKeySequence("Ctrl+Z"), self, activated=self._undo)
         QShortcut(QKeySequence("Ctrl+Y"), self, activated=self._redo)
         QShortcut(QKeySequence("Ctrl+Shift+Z"), self, activated=self._redo)
+        QShortcut(QKeySequence("Delete"), self, activated=self._delete_selected)
 
         # 方块阵列导航：每行一个色块，点击跳转；左侧带图例
         nav_row = QHBoxLayout()
@@ -1019,6 +1020,41 @@ class ReviewWindow(QMainWindow):
         nav_row.addWidget(self.nav_container)
         nav_row.addStretch(1)
         lay.addLayout(nav_row)
+
+        # 浮动操作条：激活重复组时出现在导航区正下方（靠近操作，不用跑到底部）
+        self.float_bar = QWidget()
+        self.float_bar.setStyleSheet(
+            "QWidget#floatBar { background: #263238; border-radius: 6px; }")
+        self.float_bar.setObjectName("floatBar")
+        bar_lay = QHBoxLayout(self.float_bar)
+        bar_lay.setContentsMargins(10, 6, 10, 6)
+        self.float_label = QLabel("")
+        self.float_label.setStyleSheet("color: #eceff1; font-weight: 600;")
+        bar_lay.addWidget(self.float_label)
+        bar_lay.addStretch(1)
+        self.keep_first_btn = QPushButton("保留组内第一个")
+        self.keep_first_btn.setStyleSheet(
+            "QPushButton {"
+            "  background: #00796b; color: #ffffff; font-weight: 600;"
+            "  border: none; border-radius: 5px; padding: 6px 14px;"
+            "}"
+            "QPushButton:hover { background: #009688; }"
+            "QPushButton:pressed { background: #00695c; }")
+        self.keep_first_btn.setToolTip("保留该重复组第一行，删除其余（可 Ctrl+Z 撤销）")
+        self.keep_first_btn.clicked.connect(self._on_keep_first)
+        bar_lay.addWidget(self.keep_first_btn)
+        self.keep_all_btn = QPushButton("全部保留第一个")
+        self.keep_all_btn.setStyleSheet(
+            "QPushButton {"
+            "  background: #455a64; color: #eceff1; font-weight: 600;"
+            "  border: 1px solid #607d8b; border-radius: 5px; padding: 6px 12px;"
+            "}"
+            "QPushButton:hover { background: #546e7a; }")
+        self.keep_all_btn.setToolTip("所有重复组都只保留第一行（可 Ctrl+Z 撤销）")
+        self.keep_all_btn.clicked.connect(self._on_keep_all)
+        bar_lay.addWidget(self.keep_all_btn)
+        self.float_bar.setVisible(False)
+        lay.addWidget(self.float_bar)
 
         # 左右分栏：列表 + 预览
         splitter = QSplitter(Qt.Horizontal)
@@ -1070,20 +1106,6 @@ class ReviewWindow(QMainWindow):
         self.del_btn = QPushButton("删除选中行")
         self.del_btn.clicked.connect(self._delete_selected)
         ops.addWidget(self.del_btn)
-        # 「保留组内第一个」：平时隐藏，激活重复组时出现（深青绿强调色）
-        self.keep_first_btn = QPushButton("保留组内第一个")
-        self.keep_first_btn.setVisible(False)
-        self.keep_first_btn.setStyleSheet(
-            "QPushButton {"
-            "  background: #00796b; color: #ffffff; font-weight: 600;"
-            "  border: none; border-radius: 6px;"
-            "  padding: 6px 14px;"
-            "}"
-            "QPushButton:hover { background: #009688; }"
-            "QPushButton:pressed { background: #00695c; }")
-        self.keep_first_btn.setToolTip("保留该重复组第一行，删除其余（可 Ctrl+Z 撤销）")
-        self.keep_first_btn.clicked.connect(self._on_keep_first)
-        ops.addWidget(self.keep_first_btn)
         self.clean_btn = QPushButton("按 AI 建议清理（删碎片+去重）")
         self.clean_btn.setEnabled(False)
         self.clean_btn.clicked.connect(self._on_clean)
@@ -1371,8 +1393,10 @@ class ReviewWindow(QMainWindow):
             tip = f"第 {idx + 1} 行：残谱/碎片"
         elif gi >= 0:
             color = color or "#ffd54f"
-            tip = (f"第 {idx + 1} 行：重复组 {gi + 1}（点击激活，"
-                   f"可一键保留第一个）")
+            g = self._nav_group_rows[gi] if 0 <= gi < len(self._nav_group_rows) else []
+            rng = f"第 {g[0] + 1}-{g[-1] + 1} 行" if g else ""
+            tip = (f"第 {idx + 1} 行：重复组 {gi + 1}（{rng}）"
+                   f"—— 点击激活，可一键保留第一个")
         elif pix_dup:
             color = "#b0bec5"
             tip = f"第 {idx + 1} 行：疑似重复（像素）"
@@ -1398,7 +1422,7 @@ class ReviewWindow(QMainWindow):
             self._activate_dup_group(gi)
 
     def _activate_dup_group(self, gi: int):
-        """激活重复组：高亮整组、显示「保留组内第一个」按钮。"""
+        """激活重复组：高亮整组、显示浮动操作条（含「保留组内第一个」）。"""
         if gi is None or not (0 <= gi < len(self._nav_group_rows)):
             return
         self._active_group = gi
@@ -1408,18 +1432,29 @@ class ReviewWindow(QMainWindow):
         self._update_keep_first_btn()
         self._highlight_nav(g[0] if g else -1)
 
+    def _clear_active_group(self):
+        """取消激活组（隐藏浮动条）。"""
+        self._active_group = None
+        self._update_keep_first_btn()
+
     def _update_keep_first_btn(self):
-        """根据激活组更新「保留组内第一个」按钮（可见性/文字）。"""
+        """根据激活组更新浮动操作条（可见性/文字）。"""
         if self._active_group is None or self._active_group >= len(self._nav_group_rows):
-            self.keep_first_btn.setVisible(False)
+            self.float_bar.setVisible(False)
             return
         g = self._nav_group_rows[self._active_group]
         if len(g) < 2:
-            self.keep_first_btn.setVisible(False)
+            self.float_bar.setVisible(False)
             return
-        self.keep_first_btn.setText(
-            f"保留组内第一个（第 {g[0] + 1} 行，删其余 {len(g) - 1} 行）")
-        self.keep_first_btn.setVisible(True)
+        rows_txt = f"第 {g[0] + 1} 行"
+        if len(g) > 1:
+            rows_txt = f"第 {g[0] + 1}、{g[0] + 2}" + (
+                f"…{g[-1] + 1}" if len(g) > 2 else "") + " 行"
+        self.float_label.setText(f"重复组 {self._active_group + 1}：{rows_txt}（{len(g)} 行）")
+        self.keep_first_btn.setText(f"保留第一个（删其余 {len(g) - 1} 行）")
+        self.float_bar.setVisible(True)
+        # 有多个组时显示批量按钮
+        self.keep_all_btn.setVisible(len(self._all_dup_groups()) > 1)
 
     def _on_keep_first(self):
         """点「保留组内第一个」：保留激活组第一行，删其余。"""
@@ -1428,6 +1463,35 @@ class ReviewWindow(QMainWindow):
         g = list(self._nav_group_rows[self._active_group])
         self._active_group = None
         self._keep_first_of_group(g)
+
+    def _on_keep_all(self):
+        """批量：所有重复组都只保留第一行。"""
+        groups = self._all_dup_groups()
+        if not groups:
+            return
+        to_del: set[int] = set()
+        for g in groups:
+            to_del.update(g[1:])
+        if not to_del:
+            return
+        reply = QMessageBox.question(
+            self, "全部保留第一个",
+            f"共 {len(groups)} 个重复组，将删除每组除第一行外的 {len(to_del)} 行，"
+            f"保留 {len(self.rows) - len(to_del)} 行。\n\n确认？（可 Ctrl+Z 撤销）",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if reply != QMessageBox.Yes:
+            return
+        self._push_undo()
+        for i in sorted(to_del):
+            if 0 <= i < len(self.rows):
+                self.result.all_rows.append(self.rows[i])
+        self._remap_after_delete_rows(to_del)
+        self.rows = [r for i, r in enumerate(self.rows) if i not in to_del]
+        self._active_group = None
+        self._render_list()
+        msg = f"已批量保留各组第一个：删除 {len(to_del)} 行，剩 {len(self.rows)} 行（可撤销）"
+        self.status_top.setText(msg)
+        self._log(msg)
 
     def _highlight_nav(self, cur: int):
         """高亮导航方块：选中行 > 激活组 > 悬停组 > 重复组闪烁 > 普通。"""
@@ -1551,6 +1615,19 @@ class ReviewWindow(QMainWindow):
         self._set_preview(row.image)
         # 联动：导航方块也高亮当前行
         self._highlight_nav(self.list_widget.currentRow())
+        # 选中重复行 → 自动激活该组（浮动操作条出现）
+        for gi, g in enumerate(self._nav_group_rows):
+            if orig in g:
+                if self._active_group != gi:
+                    self._active_group = gi
+                    self._update_keep_first_btn()
+                    self._highlight_nav(self.list_widget.currentRow())
+                break
+        else:
+            # 非重复行：取消激活（隐藏浮动条）
+            if self._active_group is not None:
+                self._clear_active_group()
+                self._highlight_nav(self.list_widget.currentRow())
 
     def _set_preview(self, image):
         """右侧大图预览（QGraphicsView，支持滚轮缩放 + 拖拽）。"""
@@ -1718,12 +1795,32 @@ class ReviewWindow(QMainWindow):
         if item is None:
             return
         idx = item.data(Qt.UserRole)
+        # 记录删除行的滚动锚点（删除行在视口中的相对位置，0=顶部）
+        sb = self.list_widget.verticalScrollBar()
+        vp_top = sb.value()
+        rect = self.list_widget.visualItemRect(item)
+        anchor_off = rect.top() - vp_top   # 删除行相对视口顶部偏移
+
         self._push_undo()   # 删除前快照（支持 Ctrl+Z 撤销）
         del self.rows[idx]
         # 重映射标记（保留 AI/相似），不重算 → 删除瞬间完成
         self._remap_after_delete(idx)
+        self._active_group = None
         self._render_list()
-        self.status_top.setText(f"已删除，剩 {len(self.rows)} 行（可 Ctrl+Z 撤销）")
+
+        n = len(self.rows)
+        if n <= 0:
+            self.status_top.setText("已删除全部行")
+            return
+        # 选中"删除位置的那一行"（即原来的下一行；删的是最后一行则选上一行）
+        ni = min(idx, n - 1)
+        it = self.list_widget.item(ni)
+        if it is not None:
+            self.list_widget.setCurrentItem(it)
+            # 保持删除行原来的视口位置（不乱跳）：用滚动条精确对齐
+            self.list_widget.scrollToItem(it, QAbstractItemView.PositionAtTop)
+            sb.setValue(max(0, sb.value() + anchor_off))
+        self.status_top.setText(f"已删除，剩 {n} 行（可 Ctrl+Z 撤销）")
 
     def _recover(self):
         kept_keys = {(r.source, r.index) for r in self.rows}
