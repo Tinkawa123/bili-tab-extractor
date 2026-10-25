@@ -148,13 +148,14 @@ def beat_time(bpm=100.0):
 
 
 class Sprite:
-    __slots__ = ("rgba",)
+    __slots__ = ("rgba", "pad")
 
-    def __init__(self, rgba):
+    def __init__(self, rgba, pad=0):
         arr = np.asarray(rgba, F32)
         if arr.ndim == 2:
             arr = np.dstack([np.zeros_like(arr), np.zeros_like(arr), np.zeros_like(arr), arr])
         self.rgba = arr
+        self.pad = pad
 
     # -- geometry -------------------------------------------------------- #
     @property
@@ -586,9 +587,16 @@ def glow(spr, sigma, gain=1.0, tint=None):
 
 
 def shadow(spr, sigma, opacity=0.55, color=None, dx=0.0, dy=0.0):
-    a = _blur_alpha(spr.rgba[..., 3:4], sigma) * opacity
+    # pad the alpha by 3 sigma first: otherwise the blur is clipped at the
+    # sprite border and every drop shadow ends up with a hard black edge
+    pad = int(math.ceil(sigma * 3)) + 2
+    alpha = spr.rgba[..., 3:4]
+    padded = cv2.copyMakeBorder(alpha, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0)
+    a = cv2.GaussianBlur(padded, (0, 0), sigma) * opacity
+    if a.ndim == 2:
+        a = a[..., None]
     col = np.array([0.0, 0.0, 0.0], F32) if color is None else color
-    return Sprite(np.dstack([a * col, a]))
+    return Sprite(np.dstack([a * col, a]), pad=pad)
 
 
 def drop_shadow(base, spr, x, y, sigma, opacity=0.5, dy=0, dx=0, spread=1.0, color=None):

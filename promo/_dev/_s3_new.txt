@@ -1,0 +1,191 @@
+# --------------------------------------------------------------------------- #
+# S3 — extraction (14.4 - 26.4)
+# --------------------------------------------------------------------------- #
+
+_S3 = {}
+
+
+def _s3_rows():
+    """Real tab rows scaled for the stack, paper-tinted."""
+    if "rows" in _S3:
+        return _S3["rows"]
+    src = pages.tab_rows()
+    idx = [0, 4, 7, 12, 15, 18, 21, 24, 27, 30, 33, 36]
+    out = []
+    w = 560
+    for i in idx:
+        im = src[i % len(src)]
+        h = max(18, int(round(im.shape[0] * w / im.shape[1])))
+        r = cv2.resize(im, (w, h), interpolation=cv2.INTER_AREA)
+        rgb = np.clip(r * np.array([0.955, 0.945, 0.915], F32), 0, 1)
+        spr = from_float(np.dstack([rgb, np.ones((h, w), F32)]))
+        mask = rounded_rect_mask(w, h, 3, 3)
+        spr.rgba[..., :3] *= mask[..., None]
+        spr.rgba[..., 3:4] = mask[..., None]
+        out.append({"spr": spr, "h": h, "dup": i in (7, 18, 30), "idx": len(out)})
+    _S3["rows"] = out
+    return out
+
+
+def _row_stack_layout(rows, collapse=0.0):
+    gap = 13
+    y = 0.0
+    layout = []
+    for r in rows:
+        layout.append(y)
+        appear = r["h"] + gap
+        y += appear * (1 - collapse) if r["dup"] else appear
+    return layout, y - gap
+
+
+def _s3_video_card(t):
+    """Source video card with depth ghosts + scan line."""
+    key = ("s3vid",)
+    vw, vh = 640, 360
+    if key in _C:
+        return _C[key]
+    v = video_sprite("numb1_18.png", (0, 90, 1920, 1080), vw, vh).rgb.copy()
+    lum = v @ np.array([0.2126, 0.7152, 0.0722], F32)
+    v = lum[..., None] + (v - lum[..., None]) * 0.45
+    v = np.clip(v * np.array([0.50, 0.57, 0.61], F32), 0, 1)
+    v = np.clip((v - 0.06) * 1.25, 0, 1)
+    spr = from_float(np.dstack([v, np.ones((vh, vw), F32)]))
+    m = rounded_rect_mask(vw, vh, 8, 3)
+    spr.rgba[..., :3] *= m[..., None]
+    spr.rgba[..., 3:4] = m[..., None]
+    _C[key] = spr
+    return spr
+
+
+def scene3(t):
+    img = studio_bg("cold").copy()
+    dust(img, t, gain=0.8)
+
+    # entrance: teal band from S2 shrinks to a line
+    ent = remap(t, 14.38, 14.98, ease_out_cubic)
+    if ent < 1:
+        hh = max(2, int((1 - ent) ** 1.6 * D.H * 1.25))
+        band = gradient_sprite(D.W, hh, [(0, D.hexc("#0B4A40")), (0.5, D.TEAL), (1, D.hexc("#0B4A40"))], (0, 0), (0, hh))
+        over(img, band, 0, int(560 - hh / 2), 1.0)
+        if ent > 0.3:
+            over(img, solid(D.W, 2, D.TEAL), 0, 560, (1 - ent) * 0.9, blend="add")
+
+    # ---------------- source card (left) ----------------
+    cam = remap(t, 14.8, 26.2, ease_in_out_cubic)
+    vx, vy = 424, 350 - 10 * cam
+    vw, vh = 640, 360
+    tilt = -7 + 3 * cam
+    # ghost frames behind (sampled moments)
+    for k, (gdx, gdy, gsc, ga) in enumerate([(26, 34, 0.965, 0.30), (13, 17, 0.98, 0.45)]):
+        gq = pages.page_quad(vx + gdx, vy + gdy, vw * gsc, vh * gsc, rx=6, ry=tilt, rz=-2)
+        ghost = solid(int(vw * gsc), int(vh * gsc), np.array([0.10, 0.16, 0.17], F32), alpha=ga)
+        blit_perspective(img, ghost, gq)
+    vid = _s3_video_card(t)
+    vq = pages.page_quad(vx, vy, vw, vh, rx=6, ry=tilt, rz=-2)
+    blit_perspective(img, shadow(vid, 42, 0.72), vq + np.array([0, 22], F32))
+    blit_perspective(img, vid, vq)
+    # teal edge + scan line
+    blit_perspective(img, rounded_border(vw, vh, 8, 2, D.hexc("#2FE3B8"), opacity=0.20), vq)
+    sp = remap(t, 14.9, 16.9, ease_in_out_cubic)
+    if 0 < sp < 1:
+        ly = int(vy - vh / 2 + sp * vh)
+        over(img, glow_field(D.W, 170, (D.W * 0.5, 85), 760, D.TEAL, falloff=1.7, gain=0.45), 0, ly - 85, 0.85, blend="add")
+        over(img, solid(D.W, 2, D.TEAL), 0, ly, 0.5, blend="add")
+    # label
+    if t > 14.9:
+        p = remap(t, 14.9, 15.5, ease_out_cubic)
+        lab = text_sprite("SOURCE  ·  BILIBILI TUTORIAL", D.GREY, "sans", 14, tracking=3.6)
+        over(img, lab.with_opacity(0.55 * p), 150, 176)
+
+    # ---------------- rows fly into the stack ----------------
+    rows = _s3_rows()
+    collapse = remap(t, 20.95, 21.75, ease_in_out_cubic)
+    layout, total_h = _row_stack_layout(rows, collapse)
+    stack_x = 1288
+    stack_top = 196
+    page_fade = remap(t, 23.55, 24.45, ease_in_out_cubic)
+    for i, r in enumerate(rows):
+        t_in = 15.35 + i * 0.30
+        p = remap(t, t_in, t_in + 0.66, ease_out_cubic)
+        if p <= 0:
+            continue
+        target_x = stack_x - r["spr"].w / 2
+        target_y = stack_top + layout[i]
+        sx, sy = vx + 90, vy + 80
+        arc = math.sin(math.pi * p) * (90 + 34 * (i % 4))
+        x = lerp(sx, target_x, p)
+        y = lerp(sy, target_y, p) - arc
+        rot = (1 - p) * (18 - (i % 5) * 9)
+        sc = 0.66 + 0.34 * p
+        dup_die = remap(t, 20.15, 20.95, ease_in_cubic) if r["dup"] else 0.0
+        op = p * (1 - page_fade) * (1 - dup_die)
+        if op <= 0.01:
+            continue
+        s2, _, _ = affine_sprite(r["spr"], 0, 0, sc, rot)
+        px = x + (s2.w - r["spr"].w * sc) / 2
+        py = y + (s2.h - r["spr"].h * sc) / 2
+        over(img, shadow(s2, 13, 0.42), px + 4, py + 6, op * 0.85)
+        over(img, glow(s2, 18, 0.07, D.hexc("#CFEFE6")), px, py, op, blend="add")
+        over(img, s2, px, py, op)
+        if r["dup"] and dup_die < 0.5:
+            pulse_a = 0.5 + 0.5 * math.sin(t * 7.0 + i)
+            over(img, solid(4, s2.h, D.AMBER), px - 16, py, op * pulse_a * (1 - dup_die))
+            lab = text_sprite("重复", D.AMBER, "sans", 15, tracking=2.0)
+            over(img, lab.with_opacity(op * 0.9), px - 16 - lab.w - 12, py + s2.h / 2 - lab.h / 2)
+        if t > 22.2:
+            hit = remap(t, 22.2 + i * 0.05, 22.4 + i * 0.05, ease_out_cubic) * (1 - page_fade)
+            if hit > 0.01:
+                cy = py + s2.h / 2
+                over(img, solid(2, 15, D.TEAL), px + s2.w + 16, cy - 8, hit * 0.9, blend="add")
+                over(img, solid(11, 2, D.TEAL), px + s2.w + 16, cy + 5, hit * 0.9, blend="add")
+    # ai sweep band
+    sw = remap(t, 22.05, 23.2, ease_in_out_cubic)
+    if 0 < sw < 1:
+        sy2 = stack_top + sw * total_h
+        over(img, glow_field(D.W, 160, (D.W * 0.5, 80), 760, D.TEAL, falloff=1.9, gain=0.38), 0, sy2 - 80, 0.9, blend="add")
+        over(img, solid(700, 2, D.TEAL), stack_x - 350, sy2, 0.55, blend="add")
+
+    # ---------------- page ----------------
+    if t > 23.55:
+        page = pages.build_page(list(range(0, 9)), "富士山下", "吉他谱 · 完整版", 1, 3)
+        pw = 560
+        ph = int(page.h * pw / page.w)
+        pg = page.scaled(pw, ph)
+        pp = remap(t, 23.55, 24.55, ease_out_cubic)
+        cx, cy = stack_x, stack_top + total_h / 2
+        push2 = remap(t, 24.85, 26.35, ease_in_cubic)
+        sc2 = 1 + push2 * 1.6
+        cx = lerp(cx, D.W * 0.40, push2)
+        cy = lerp(cy, D.H * 0.48, push2)
+        w2, h2 = int(pg.w * sc2), int(pg.h * sc2)
+        pg2 = pg.scaled(w2, h2)
+        over(img, shadow(pg2, 46 + push2 * 46, 0.68, color=np.array([0, 0, 0], F32)), cx - w2 / 2 + 12, cy - h2 / 2 + 28, pp)
+        over(img, pg2, cx - w2 / 2, cy - h2 / 2, pp)
+        over(img, glow(pg2, 44, 0.09, D.PAPER), cx - w2 / 2, cy - h2 / 2, pp, blend="add")
+
+    # ---------------- HUD: 2 x 2 data block (bottom left) ----------------
+    hud = [
+        (15.05, 150, AD := 760, "FRAMES / 帧", "386", D.PAPER),
+        (17.30, 456, AD, "TAB ROWS / 行", "+48", D.PAPER),
+        (20.60, 150, AD + 118, "DUPLICATES / 重复", "−12", D.AMBER),
+        (24.10, 456, AD + 118, "PAGES / 页", "3", D.TEAL),
+    ]
+    for (t_in, hx, hy, lab_en, val, col) in hud:
+        p = remap(t, t_in, t_in + 0.45, ease_out_cubic)
+        if p <= 0:
+            continue
+        lab = text_sprite(lab_en, D.GREY, "sans", 13, tracking=3.2)
+        over(img, lab.with_opacity(0.5 * p), hx, hy)
+        v = text_sprite(val, col, "mono_bold", 54, tracking=1.5)
+        over(img, wipe(v, p, up=False), hx - 2, hy + 20)
+    # section label
+    if t > 14.8:
+        p = remap(t, 14.8, 15.4, ease_out_cubic)
+        lab = text_sprite("02 / 抽取", D.GREY, "sans", 15, tracking=4.0)
+        over(img, lab.with_opacity(0.6 * p * (1 - remap(t, 25.5, 26.1, ease_in_out_cubic))), 150, 238)
+    # small statement
+    if t > 24.35:
+        p = remap(t, 24.35, 24.95, ease_out_cubic)
+        st = text_sprite("抽帧 → 拼接 → 去重 → 成页", D.GREY, "sans", 19, tracking=2.0)
+        over(img, wipe(st, p).with_opacity(0.85), 148, 966)
+    return _flash_cut(img, t, 26.22, 26.4)

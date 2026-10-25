@@ -240,7 +240,7 @@ def _video_world(t):
     tab *= np.array([0.86, 0.815, 0.745], F32)
     over(base, from_float(np.dstack([tab, np.ones((tab_h, D.W), F32)])), 0, tab_top)
     # boundary shadow above the tab
-    scrim(base, D.W, 120, (0, 0), (0, 120), [(0.0, 0.0), (0.55, 0.55), (1.0, 0.92)], 0, tab_top - 120)
+    scrim(base, D.W, 170, (0, 0), (0, 170), [(0.0, 0.0), (0.35, 0.30), (0.75, 0.76), (1.0, 0.95)], 0, tab_top - 170)
     # scan line inside the tab
     sp = (t * 0.42) % 1.0
     ly = int(tab_top + 8 + sp * (tab_h - 16))
@@ -325,7 +325,7 @@ def scene1(t):
         if 0 < p and out < 1:
             op = p * (1 - out)
             _reticle(img, 62, 738, D.W - 124, 300, op, tc, t)
-        fl = pulse(t, tc, 0.22)
+        fl = pulse(t, tc - 0.042, 0.22)
         if fl > 0:
             # localised flash inside the capture area only
             flash = solid(D.W, D.H, D.WHITE)
@@ -355,7 +355,7 @@ def scene1(t):
 
     # ---- polaroid pile
     _s1_polaroids(img, t)
-    return _flash_cut(img, t, 7.06, 7.2)
+    return _flash_cut(img, t, 7.09, 7.2)
 
 
 def _reticle(img, x, y, w, h, op, tc, t):
@@ -377,9 +377,9 @@ def _flash_cut(img, t, t0, t1):
     fl = 0.0
     if t0 <= t <= t1:
         u = (t - t0) / (t1 - t0)
-        fl = math.sin(math.pi * u) ** 0.6
+        fl = math.sin(math.pi * u) ** 0.8
     if fl > 0:
-        img = img * (1 - fl * 0.95) + fl * 0.95
+        img = img * (1 - fl * 0.86) + fl * 0.86
     return img
 
 
@@ -761,12 +761,14 @@ def scene2(t):
     # end push-in toward the progress bar
     push = remap(t, 13.2, 14.32, ease_in_out_cubic)
     fx, fy = _UI_M + 150, _UI_BTN_Y + 44
-    scale = 1.0 + push * 0.95 + 0.012 * remap(t, 7.2, 13.2, ease_in_out_cubic)
+    breathe = 0.010 * remap(t, 7.2, 13.2, ease_in_out_cubic) + 0.0045 * math.sin((t - 7.2) * 0.9)
+    scale = 1.0 + push * 0.95 + breathe
     focus_x = lerp(WIN_X + fx, 760, push)
     focus_y = lerp(WIN_Y + fy, 560, push)
     ox = focus_x - fx * scale
     oy = focus_y - fy * scale
-    ent = remap(t, 7.22, 8.05, ease_out_cubic)
+    oy += 4.0 * math.sin((t - 7.2) * 0.62)
+    ent = remap(t, 7.2, 7.62, ease_out_quint)
     oy += (1 - ent) * 50
     if ent > 0.02:
         w = int(win.w * scale)
@@ -778,6 +780,12 @@ def scene2(t):
         over(img, sh2, ox + 2, oy + 16)
         over(img, win_s, ox, oy, ent)
         over(img, rounded_border(w, h, int(18 * scale), max(1, int(1.7 * scale)), D.WHITE, opacity=0.32), ox, oy, ent)
+    # slow screen-reflection sweep
+    sw = ((t - 7.2) / 2.6) % 1.0
+    if t > 7.4:
+        band = gradient_sprite(360, D.H, [(0.0, np.zeros(3, F32)), (0.5, D.WHITE), (1.0, np.zeros(3, F32))], (0, 0), (360, 0))
+        bx = int(-360 + (D.W + 720) * sw)
+        over(img, band, bx, 0, 0.035)
     # captions (left column)
     caption(img, "粘贴链接，", 140, 300, t, 7.55, 9.55, D.PAPER, "serif", 58, 1.0, 600, rise=18, dur=0.5)
     caption(img, "点一下。", 140, 386, t, 9.85, 12.05, D.PAPER, "serif", 58, 1.0, 600, rise=18, dur=0.5)
@@ -823,6 +831,8 @@ def _s3_rows():
     w = 470
     for i in idx:
         im = src[i % len(src)].astype(F32) / 255.0
+        ih, iw = im.shape[:2]
+        im = im[:, int(iw * 0.012) : int(iw * 0.985)]
         h = max(18, int(round(im.shape[0] * w / im.shape[1])))
         r = cv2.resize(im, (w, h), interpolation=cv2.INTER_AREA)
         rgb = np.clip(r * np.array([0.955, 0.945, 0.915], F32), 0, 1)
@@ -881,18 +891,6 @@ def scene3(t):
     # ---------------- backdrop: sampled frames + stack glow ----------------
     sg = glow_field(D.W, D.H, (1300, 520), 620, D.hexc("#0E4B41"), falloff=2.6, gain=0.55)
     over(img, sg, 0, 0, 1.0, blend="add")
-    sheet_a = remap(t, 14.9, 15.8, ease_out_cubic) * (1 - remap(t, 21.8, 23.0, ease_in_out_cubic))
-    if sheet_a > 0.01:
-        rng = np.random.default_rng(9)
-        for gy in range(4):
-            for gx in range(3):
-                tx = 760 + gx * 176 + rng.uniform(-8, 8)
-                ty = 170 + gy * 150 + rng.uniform(-8, 8)
-                th = 96
-                tw = 170
-                gm = rounded_rect_mask(tw, th, 6, 3) * 0.5
-                gs = blur(mask_to_sprite(gm, D.hexc("#4E8C86")), 10)
-                over(img, gs, tx, ty, sheet_a * (0.05 + 0.04 * rng.uniform(0, 1)))
     # ---------------- source card (left) ----------------
     cam = remap(t, 14.8, 26.2, ease_in_out_cubic)
     vx, vy = 430, 356 - 10 * cam
@@ -913,13 +911,14 @@ def scene3(t):
     sp = remap(t, 14.9, 16.9, ease_in_out_cubic)
     if 0 < sp < 1:
         ly = int(vy - vh / 2 + sp * vh)
-        over(img, glow_field(D.W, 170, (D.W * 0.5, 85), 760, D.TEAL, falloff=1.7, gain=0.45), 0, ly - 85, 0.85, blend="add")
-        over(img, solid(D.W, 2, D.TEAL), 0, ly, 0.5, blend="add")
+        over(img, glow_field(int(vw + 120), 170, ((vw + 120) * 0.5, 85), vh * 0.75, D.TEAL, falloff=1.7, gain=0.42),
+             int(vx - vw / 2 - 60), ly - 85, 0.75, blend="add")
+        over(img, solid(int(vw), 2, D.TEAL), int(vx - vw / 2), ly, 0.5, blend="add")
     # label
     if t > 14.9:
         p = remap(t, 14.9, 15.5, ease_out_cubic)
         lab = text_sprite("SOURCE  ·  BILIBILI TUTORIAL", D.GREY, "sans", 14, tracking=3.6)
-        over(img, lab.with_opacity(0.55 * p), 150, 176)
+        over(img, lab.with_opacity(0.55 * p), 150, 112)
 
     # ---------------- rows fly into the stack ----------------
     rows = _s3_rows()
@@ -942,7 +941,7 @@ def scene3(t):
         rot = (1 - p) * (18 - (i % 5) * 9)
         sc = 0.66 + 0.34 * p
         dup_die = remap(t, 20.15, 20.95, ease_in_cubic) if r["dup"] else 0.0
-        op = p * (1 - page_fade) * (1 - dup_die)
+        op = min(1.0, p * 2.6) * (1 - page_fade) * (1 - dup_die)
         if op <= 0.01:
             continue
         s2, _, _ = affine_sprite(r["spr"], 0, 0, sc, rot)
@@ -971,7 +970,7 @@ def scene3(t):
 
     # ---------------- page ----------------
     if t > 23.55:
-        page = pages.build_page(list(range(0, 5)), "Paranoid", "Black Sabbath · 吉他谱", 1, 8)
+        page = pages.build_page([0, 4, 9, 15, 21], "Paranoid", "Black Sabbath · 吉他谱", 1, 8)
         pw = 560
         ph = int(page.h * pw / page.w)
         pg = page.scaled(pw, ph)
@@ -1009,7 +1008,7 @@ def scene3(t):
     if t > 14.8:
         p = remap(t, 14.8, 15.4, ease_out_cubic)
         lab = text_sprite("02 / 抽取", D.GREY, "sans", 17, tracking=4.0)
-        over(img, lab.with_opacity(0.8 * p * (1 - remap(t, 25.5, 26.1, ease_in_out_cubic))), 150, 238)
+        over(img, lab.with_opacity(0.8 * p * (1 - remap(t, 25.5, 26.1, ease_in_out_cubic))), 150, 146)
     # human commentary (the section must not be 13 s of silence)
     for t_in, t_out, line in [
         (15.55, 17.05, "386 帧里，"),
@@ -1096,7 +1095,7 @@ def _review_window(t):
         over(B, rounded_rect(col, col, 4, c, opacity=0.9), bx, by)
     lab = text_sprite("导航", D.INK_SOFT, "sans", 13, tracking=2.0)
     over(B, lab, m + 15 * 20 + 14, 130)
-    cnt = text_sprite("48 块 · 点一下跳转", D.GREY_DIM, "sans", 12, tracking=1.0)
+    cnt = text_sprite("30 块 · 点一下跳转", D.GREY_DIM, "sans", 14, tracking=1.0)
     over(B, cnt, m + 15 * 20 + 14, 150)
 
     # ---------- list
@@ -1135,7 +1134,7 @@ def _review_window(t):
     if keep > 0.01:
         cards[1]["y"] = lerp(slot, slot, 1) * 1 * (1 - drag) + y1 * drag if False else y1
         cards[4]["y"] = y2
-    sel = 27.5 < t < 30.3
+    sel = 27.5 < t < 30.55
 
     for idx, c in enumerate(cards):
         if c["op"] <= 0.01:
@@ -1229,7 +1228,7 @@ def _review_window(t):
         over(B, tt.with_opacity(ta), tx + 20, 209)
 
     # ---------- "discarded rows can be found again" micro-beat
-    fr = remap(t, 30.35, 30.95, ease_out_cubic)
+    fr = remap(t, 30.35, 30.95, ease_out_cubic) * (1 - remap(t, 31.85, 32.35, ease_in_out_cubic))
     if fr > 0:
         fw2 = 420
         fx2 = lx + cw - fw2
@@ -1304,11 +1303,12 @@ def scene4(t):
     over(img, key, 0, 0, 1.0, blend="add")
 
     push = remap(t, 33.2, 34.9, ease_in_out_cubic)
-    scale = 1.0 + push * 0.22
+    drift = remap(t, 26.4, 34.0, ease_in_out_cubic)
+    scale = 1.0 + push * 0.22 + 0.014 * drift + 0.0035 * math.sin((t - 26.4) * 0.8)
     # interpolate the window position directly so it stays framed while pushing in
-    ox = lerp(_RV_X, 196.0, push)
-    oy = lerp(_RV_Y, 128.0, push)
-    ent = remap(t, 26.4, 27.2, ease_out_cubic)
+    ox = lerp(_RV_X, 196.0, push) - 16.0 * drift
+    oy = lerp(_RV_Y, 128.0, push) - 8.0 * drift + 3.5 * math.sin((t - 26.4) * 0.55)
+    ent = remap(t, 26.4, 26.8, ease_out_quint)
     oy += (1 - ent) * 54
     win = _review_window(t)
     w = int(win.w * scale)
@@ -1319,6 +1319,11 @@ def scene4(t):
     over(img, win_s, ox, oy, ent)
     over(img, rounded_border(w, h, int(18 * scale), max(1, int(1.7 * scale)), D.WHITE, opacity=0.3), ox, oy, ent)
 
+    sw4 = ((t - 26.4) / 2.9) % 1.0
+    if t > 26.5:
+        band = gradient_sprite(420, D.H, [(0.0, np.zeros(3, F32)), (0.5, D.WHITE), (1.0, np.zeros(3, F32))], (0, 0), (420, 0))
+        bx = int(-420 + (D.W + 840) * sw4)
+        over(img, band, bx, 0, 0.03)
     # captions (left column)
     caption(img, "错一行？", 138, 300, t, 26.9, 28.9, D.PAPER, "serif", 56, 1.0, 600, rise=18, dur=0.5)
     caption(img, "拖一下。", 138, 382, t, 27.5, 29.4, D.PAPER, "serif", 56, 1.0, 600, rise=18, dur=0.5)
@@ -1348,8 +1353,9 @@ def _page(i):
     if key in _PG:
         return _PG[key]
     titles = [("Paranoid", "Black Sabbath · 吉他谱"), ("Paranoid", "Black Sabbath · 吉他谱"), ("Paranoid", "Black Sabbath · 吉他谱")]
-    starts = [0, 5, 10]
-    pg = pages.build_page(list(range(starts[i], starts[i] + 5)), titles[i][0], titles[i][1], i + 1, 8)
+    starts = [0, 7, 15]
+    picks = [[0, 4, 9, 15, 21], [3, 8, 13, 19, 25], [6, 11, 17, 23, 29]][i]
+    pg = pages.build_page(picks, titles[i][0], titles[i][1], i + 1, 8)
     _PG[key] = pg
     return pg
 
@@ -1387,7 +1393,7 @@ def scene5(t):
     cx, cy = 1010, 566
 
     # entrance
-    ent = remap(t, 35.98, 36.55, ease_out_cubic)
+    ent = remap(t, 35.96, 36.4, ease_out_quint)
     lift = remap(t, 35.98, 37.1, ease_out_cubic)
     macro = remap(t, 40.45, 42.3, ease_in_out_cubic)
     back = remap(t, 42.35, 43.6, ease_in_out_cubic)
@@ -1444,9 +1450,7 @@ def scene5(t):
                 f2 = abs(f)
                 q2 = _page_turn_quad(spine, top, pw, ph, max(0.02, f2))
                 blit_perspective(img, shadow(p2, 30, 0.4), q2 + np.array([6, 10], F32), ent)
-                blit_perspective(img, p2, q2, ent)
-        # base shadow under the page
-        over(img, shadow(p1, 50, 0.55, dx=0, dy=26), cx - pw / 2, cy - ph / 2 + 26, ent * (1 - macro))
+                blit_perspective(img, p2, q2, ent * min(1.0, flip * 7.0))
 
     # ---------------- pull back to a printed stack
     if back > 0:
@@ -1571,15 +1575,21 @@ def scene6(t):
         q = pages.page_quad(D.W * 0.5, D.H * 0.5 - out * 40, w, h, rz=-2 * out, ry=-8 - 12 * out)
         blit_perspective(img, shadow(spr, 50, 0.6), q + np.array([0, 18], F32), 1 - out)
         blit_perspective(img, spr, q, 1 - out)
-        lp = remap(t, 46.35, 47.5, ease_in_out_cubic)
-        if lp > 0:
-            ly = D.H * 0.5 - 40 * out + h * 0.06
-            lw = int((D.W * 0.62) * lp)
-            over(img, solid(lw, 2, D.TEAL), (D.W - lw) / 2, ly, lp * 0.9, blend="add")
-            over(img, glow_field(D.W, 220, (D.W * 0.5, 110), D.W * 0.42, D.TEAL, falloff=2.0, gain=0.38), 0, ly - 110, lp * 0.8, blend="add")
+        lp = remap(t, 46.35, 47.3, ease_in_out_cubic)
+
+    # ---------------- the protagonist line: page -> logo bar
+    pl = remap(t, 46.35, 52.4, ease_in_out_cubic)
+    if 46.35 < t < 52.55:
+        ly = lerp(D.H * 0.63, 318.0, pl)
+        lw = int(lerp(D.W * 0.62, 396.0, pl))
+        dim = 0.95 * (1.0 - 0.66 * remap(t, 47.45, 48.05) * (1.0 - remap(t, 51.15, 51.75, ease_in_out_cubic)))
+        dim *= 1.0 - remap(t, 51.95, 52.35, ease_in_out_cubic)
+        over(img, solid(lw, 2, D.TEAL), (D.W - lw) / 2, ly, dim, blend="add")
+        # full-height soft glow: a fixed-size rect would show its own edges
+        over(img, glow_field(D.W, D.H, (D.W * 0.5, ly), D.W * 0.42, D.TEAL, falloff=2.0, gain=0.30), 0, 0, 0.75 * dim, blend="add")
 
     # ---------------- hero couplet
-    caption(img, "视频会划走，", None, 340, t, 47.55, 51.35, D.PAPER, "serif", 112, 3.0, 600, rise=26, dur=0.7, align="center")
+    caption(img, "视频会划走，", None, 340, t, 47.55, 51.35, D.WHITE, "serif", 112, 3.0, 600, rise=26, dur=0.7, align="center")
     caption(img, "谱子会留下。", None, 488, t, 48.85, 51.35, D.TEAL, "serif", 112, 3.0, 600, rise=26, dur=0.7, align="center")
 
     # ---------------- end card
@@ -1608,19 +1618,19 @@ def scene6(t):
     # CTA block
     if t > 55.3:
         p = remap(t, 55.3, 56.0, ease_out_cubic)
-        l1 = text_sprite("WINDOWS · 免安装 · 免费", D.GREY_DIM, "sans", 16, tracking=3.0)
-        over(img, l1.with_opacity(0.75 * p), (D.W - l1.w) / 2, 812 + (1 - p) * 12)
-        l2 = text_sprite("B站 / GitHub 搜索：视频扒谱工具", D.PAPER, "sans", 27, tracking=2.0)
-        over(img, l2.with_opacity(0.95 * p), (D.W - l2.w) / 2, 846 + (1 - p) * 12)
-        l3 = text_sprite("github.com/Tinkawa123/bili-tab-extractor", D.TEAL, "mono", 18, tracking=1.2)
-        over(img, l3.with_opacity(0.92 * p), (D.W - l3.w) / 2, 890 + (1 - p) * 14)
+        l1 = text_sprite("WINDOWS  ·  免安装  ·  免费", D.hexc("#C9D2D4"), "sans", 21, tracking=3.0)
+        over(img, l1.with_opacity(0.92 * p), (D.W - l1.w) / 2, 806 + (1 - p) * 12)
+        l2 = text_sprite("B站 / GitHub 搜索：视频扒谱工具", D.PAPER, "sans", 40, tracking=2.0)
+        over(img, l2.with_opacity(0.97 * p), (D.W - l2.w) / 2, 844 + (1 - p) * 12)
+        l3 = text_sprite("github.com/Tinkawa123/bili-tab-extractor", D.TEAL, "mono", 24, tracking=1.2)
+        over(img, l3.with_opacity(0.95 * p), (D.W - l3.w) / 2, 904 + (1 - p) * 14)
 
 
     # continuous slow push + fade out
-    drift = remap(t, 51.0, 59.2, ease_in_out_cubic)
+    drift = remap(t, 51.0, 59.4, ease_in_out_cubic)
     if drift > 0:
-        img = _camera(img, 1.0 + 0.03 * drift, D.W * 0.5, D.H * 0.52)
-    end = remap(t, 58.85, 60.0, ease_in_out_cubic)
+        img = _camera(img, 1.0 + 0.055 * drift, D.W * 0.5, D.H * 0.52)
+    end = remap(t, 59.3, 60.0, ease_in_out_cubic)
     if end > 0:
         img = img * (1 - end)
     return img
@@ -1638,6 +1648,27 @@ def _placeholder(t, name):
 # --------------------------------------------------------------------------- #
 
 
+def _transition_fx(img, t):
+    """Give each hard cut its own light signature instead of the same flash."""
+    # S3 -> S4 : fast diagonal streak
+    if 26.28 < t < 26.66:
+        u = remap(t, 26.28, 26.66, ease_out_cubic)
+        band = gradient_sprite(380, D.H + 200, [(0.0, np.zeros(3, F32)), (0.5, D.WHITE), (1.0, np.zeros(3, F32))], (0, 0), (380, 0))
+        bx = int(-380 + (D.W + 760) * u)
+        over(img, band, bx, 0, 0.30 * (1 - u))
+    # S4 -> S5 : warm table-light bloom
+    if 35.94 < t < 36.5:
+        u = pulse(t, 35.94, 0.56)
+        warm = glow_field(D.W, D.H, (D.W * 0.5, D.H * 0.45), 900, D.hexc("#FFD9A0"), falloff=2.2, gain=0.55)
+        over(img, warm, 0, 0, 0.55 * u, blend="add")
+    # S5 -> S6 : cool teal rim
+    if 45.52 < t < 46.1:
+        u = pulse(t, 45.52, 0.58)
+        cool = glow_field(D.W, D.H, (D.W * 0.5, D.H * 0.5), 1000, D.hexc("#2FE3B8"), falloff=2.4, gain=0.5)
+        over(img, cool, 0, 0, 0.4 * u, blend="add")
+    return img
+
+
 def frame(t):
     t = float(np.clip(t, 0, D.DURATION - 1e-6))
     if t < D.S2:
@@ -1652,6 +1683,7 @@ def frame(t):
         img = scene5(t)
     else:
         img = scene6(t)
+    img = _transition_fx(img, t)
     warm = 0.6 if D.S5 <= t < D.S6 else 0.0
     vig = 0.46 if t < D.S2 else (0.34 if t < D.S5 else 0.46)
     bloom_amt = 0.07 if D.S5 <= t < D.S6 else 0.13

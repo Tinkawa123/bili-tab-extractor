@@ -1,0 +1,18 @@
+﻿import sys
+sys.path.insert(0, ".")
+from _jb_sheets2 import seq, grid
+print(seq(34.30, 6, 3, tag="cut_34.3_35.7", scale=0.6))
+print(seq(35.60, 6, 3, tag="cut_35.6_37.0", scale=0.6))
+print(seq(38.50, 6, 3, tag="flip_38.5_40.0", scale=0.6))
+print(seq(45.30, 6, 3, tag="s6_45.3_46.7", scale=0.6))
+print(seq(52.40, 6, 2, tag="logo_52.4_53.6", scale=0.6))
+print(seq(14.20, 6, 2, tag="in_14.2_14.9", scale=0.6))
+print(seq(26.20, 6, 2, tag="cut26_26.2_26.8", scale=0.6))
+print(seq(7.00, 6, 2, tag="cut7_7.0_7.6", scale=0.6))
+print(seq(9.80, 6, 2, tag="click_9.8_10.4", scale=0.6))
+print(seq(17.80, 6, 3, tag="snap_17.8_19.1", scale=0.6))
+print(seq(20.00, 6, 3, tag="dedupe_20.0_21.3", scale=0.6))
+print(seq(21.90, 6, 3, tag="ai_21.9_23.2", scale=0.6))
+print(seq(42.60, 6, 3, tag="macro_42.6_43.9", scale=0.6))
+print(seq(49.00, 6, 6, tag="head_49.0_50.2", scale=0.6))
+print(seq(55.90, 6, 6, tag="tag_55.9_57.1", scale=0.6))

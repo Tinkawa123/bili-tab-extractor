@@ -1,0 +1,182 @@
+URL = "bilibili.com/video/BV1nU4y1r7xJ"
+LOGS = ["下载视频  100%", "抽取帧  386 张", "检测谱面区域", "识别谱行  48 行"]
+
+_UI_W, _UI_H = 1280, 820
+_UI_M = 68
+_UI_FIELD_Y = 202
+_UI_BTN_Y = 438
+
+# screen placement of the window (before the end push-in)
+WIN_X, WIN_Y = 470, 148
+
+
+def _ui_base():
+    key = ("uibase",)
+    if key in _C:
+        return _C[key]
+    w, h, m = _UI_W, _UI_H, _UI_M
+    win = blank(w, h)
+    base = np.zeros((h, w, 3), F32) + D.UI_BG
+    over(win.rgba[..., :3], from_float(np.dstack([base, np.ones((h, w), F32)])), 0, 0)
+
+    title = text_sprite("视频扒谱工具", D.UI_TEXT, "sans_bold", 36, tracking=1.2)
+    over(win.rgba[..., :3], title, m, 32)
+    sub = text_sprite("B站教学视频  →  完整吉他谱  /  A4 PDF", D.INK_SOFT, "sans", 17, tracking=1.8)
+    over(win.rgba[..., :3], sub, m, 84)
+    over(win.rgba[..., :3], ellipse_sprite(10, 10, D.GREEN), w - m - 110, 44)
+    st = text_sprite("就绪", D.INK_SOFT, "sans", 16, tracking=1.4)
+    over(win.rgba[..., :3], st, w - m - 92, 37)
+    over(win.rgba[..., :3], solid(w - 2 * m, 1, D.UI_LINE), m, 130)
+
+    lbl = text_sprite("B站视频链接", D.INK_SOFT, "sans", 17, tracking=2.4)
+    over(win.rgba[..., :3], lbl, m, 164)
+    fw, fh = w - 2 * m, 86
+    over(win.rgba[..., :3], rounded_rect(fw, fh, 15, D.UI_PANEL), m, _UI_FIELD_Y)
+    over(win.rgba[..., :3], rounded_border(fw, fh, 15, 1.5, D.UI_LINE), m, _UI_FIELD_Y)
+
+    lbl2 = text_sprite("输出标题（可选）", D.INK_SOFT, "sans", 17, tracking=2.4)
+    over(win.rgba[..., :3], lbl2, m, 322)
+    over(win.rgba[..., :3], rounded_rect(fw, 66, 13, D.UI_PANEL), m, 358)
+    over(win.rgba[..., :3], rounded_border(fw, 66, 13, 1.3, D.UI_LINE), m, 358)
+    ph = text_sprite("留空自动用视频标题", D.GREY_DIM, "sans", 18, tracking=1.2)
+    over(win.rgba[..., :3], ph, m + 26, 376)
+
+    hint = text_sprite("本地处理 · 不上传视频 · 可随时中断", D.GREY_DIM, "sans", 15, tracking=1.2)
+    over(win.rgba[..., :3], hint, m, h - 62)
+    over(win.rgba[..., :3], solid(w, 1, D.WHITE), 0, 0, 0.8)
+    mask = rounded_rect_mask(w, h, 18, 4)
+    win.rgba[..., :3] *= mask[..., None]
+    win.rgba[..., 3:4] = mask[..., None]
+    _C[key] = win
+    return win
+
+
+def _draw_options(base, t, alpha):
+    w, m = _UI_W, _UI_M
+    if alpha <= 0.01:
+        return
+    for i, (k, v) in enumerate([("抽帧间隔", "2.0 s"), ("分辨率", "原始"), ("核验", "开启")]):
+        bx = m + i * 270
+        over(base, rounded_rect(244, 60, 10, D.UI_PANEL, opacity=alpha), bx, _UI_BTN_Y + 4)
+        over(base, rounded_border(244, 60, 10, 1.2, D.UI_LINE, opacity=alpha), bx, _UI_BTN_Y + 4)
+        kt = text_sprite(k, D.INK_SOFT, "sans", 16, tracking=1.4)
+        over(base, kt.with_opacity(alpha), bx + 20, _UI_BTN_Y + 22)
+        vt = text_sprite(v, D.UI_TEXT, "sans", 17, tracking=0.6)
+        over(base, vt.with_opacity(alpha), bx + 244 - 20 - vt.w, _UI_BTN_Y + 20)
+    bw, bh = 258, 86
+    bx, by = w - m - bw, _UI_BTN_Y - 6
+    press = remap(t, 9.90, 9.97, ease_out_cubic) * (1 - remap(t, 10.05, 10.40, ease_out_cubic))
+    sc = 1 - 0.025 * press
+    bw2, bh2 = int(bw * sc), int(bh * sc)
+    over(base, rounded_rect(bw2, bh2, 16, D.TEAL_DEEP, opacity=alpha), bx + (bw - bw2) / 2, by + (bh - bh2) / 2)
+    bt = text_sprite("开始处理", D.WHITE, "sans_bold", 27, tracking=2.6)
+    over(base, bt.with_opacity(alpha), bx + (bw - bt.w) / 2, by + (bh - bt.h) / 2 - 4)
+
+
+def _ui_window(t):
+    win = _ui_base().copy()
+    w, h, m = _UI_W, _UI_H, _UI_M
+    base = win.rgba[..., :3]
+
+    # typed url
+    n = int(clamp((t - 7.95) / 1.05) * len(URL))
+    typed = URL[:n]
+    fx, fy = m + 28, _UI_FIELD_Y + 26
+    if typed:
+        over(base, text_sprite(typed, D.UI_TEXT, "mono", 28, tracking=0.4), fx, fy)
+    caret_x = fx + (measure_text(typed, "mono", 28, 0.4) if typed else 0)
+    typing = 7.95 <= t <= 9.18
+    if typing or (int(t * 2.2) % 2 == 0):
+        over(base, solid(2, 34, D.UI_TEXT), caret_x + 3, fy + 2, 0.95 if typing else 0.5)
+
+    # processing panel replaces the options row
+    pa = remap(t, 10.42, 11.0, ease_out_cubic)
+    _draw_options(base, t, 1 - pa)
+    if pa > 0:
+        over(base, solid(w - 2 * m, 262, D.UI_BG), m, 430, pa)
+        yy = _UI_BTN_Y + 8
+        over(base, rounded_rect(w - 2 * m, 10, 5, D.hexc("#DCD4C6"), opacity=pa), m, yy + 40)
+        prog = clamp((t - 10.7) / 3.0) * 0.62
+        fw2 = int((w - 2 * m) * prog)
+        if fw2 > 4:
+            over(base, rounded_rect(fw2, 10, 5, D.TEAL_DEEP, opacity=pa), m, yy + 40)
+        pc = text_sprite(f"{int(prog*100):02d}%", D.UI_TEXT, "mono_bold", 20, tracking=1.0)
+        over(base, pc.with_opacity(pa), m, yy - 2)
+        status = text_sprite("正在检测谱面区域…", D.INK_SOFT, "sans", 18, tracking=1.4)
+        over(base, status.with_opacity(pa), m + 84, yy - 3)
+        for i, lab in enumerate(LOGS):
+            lt = 10.9 + i * 0.55
+            lp = remap(t, lt, lt + 0.4, ease_out_cubic) * pa
+            if lp <= 0:
+                continue
+            ly = yy + 88 + i * 42
+            over(base, ellipse_sprite(8, 8, D.TEAL_DEEP), m + 4, ly + 8, lp)
+            ls = text_sprite(lab, D.UI_TEXT, "sans", 19, tracking=0.8)
+            over(base, ls.with_opacity(lp), m + 28, ly)
+            if i == 0:
+                done = text_sprite("完成", D.GREEN, "sans", 14, tracking=1.0)
+                over(base, done.with_opacity(lp * 0.9), m + 28 + ls.w + 14, ly + 4)
+
+    # cursor + ripple (hidden once the click happens)
+    bw, bh = 258, 86
+    bx, by = w - m - bw, _UI_BTN_Y - 6
+    tgt = (bx + bw * 0.52, by + bh * 0.58)
+    p = remap(t, 9.12, 9.84, ease_in_out_cubic)
+    cur = cursor_sprite(1.05)
+    cur_x = lerp(1160, tgt[0], p)
+    cur_y = lerp(760, tgt[1], p)
+    if t < 9.96:
+        over(base, cur, cur_x, cur_y, 0.98)
+    for k in range(2):
+        pr = remap(t, 9.94 + k * 0.13, 10.85 + k * 0.13, ease_out_cubic)
+        if 0.02 < pr < 1:
+            r = int(26 + pr * 320)
+            over(base, mask_to_sprite(ring_mask(r * 2, 2.8), D.TEAL_DEEP), bx + bw / 2 - r, by + bh / 2 - r, (1 - pr) * 0.42)
+    return win
+
+
+def scene2(t):
+    img = studio_bg("dark").copy()
+    dust(img, t, gain=0.5)
+    key = glow_field(D.W, D.H, (D.W * 0.62, D.H * 0.66), 1120, D.hexc("#4A2E12"), falloff=2.3, gain=0.6)
+    over(img, key, 0, 0, 1.0, blend="add")
+
+    win = _ui_window(t)
+    # end push-in toward the progress bar
+    push = remap(t, 13.2, 14.32, ease_in_out_cubic)
+    fx, fy = _UI_M + 150, _UI_BTN_Y + 44
+    scale = 1.0 + push * 0.95
+    focus_x = lerp(WIN_X + fx, 760, push)
+    focus_y = lerp(WIN_Y + fy, 560, push)
+    ox = focus_x - fx * scale
+    oy = focus_y - fy * scale
+    ent = remap(t, 7.22, 8.05, ease_out_cubic)
+    oy += (1 - ent) * 50
+    if ent > 0.02:
+        w = int(win.w * scale)
+        h = int(win.h * scale)
+        win_s = win.scaled(w, h)
+        sh = shadow(win_s, 54 + 26 * push, 0.55 * ent, color=np.array([0, 0, 0], F32))
+        over(img, sh, ox + 8, oy + 36)
+        over(img, win_s, ox, oy, ent)
+        over(img, rounded_border(w, h, int(18 * scale), max(1, int(1.7 * scale)), D.WHITE, opacity=0.32), ox, oy, ent)
+    # captions (left column)
+    caption(img, "粘贴链接，", 140, 300, t, 7.55, 9.55, D.PAPER, "serif", 58, 1.0, 600, rise=18, dur=0.5)
+    caption(img, "点一下。", 140, 386, t, 9.85, 12.05, D.PAPER, "serif", 58, 1.0, 600, rise=18, dur=0.5)
+    caption(img, "剩下的，", 140, 660, t, 12.25, 13.55, D.TEAL, "serif", 46, 1.0, 600, rise=16, dur=0.5)
+    caption(img, "交给它。", 140, 722, t, 12.52, 13.55, D.TEAL, "serif", 46, 1.0, 600, rise=16, dur=0.5)
+    if t > 7.4:
+        p = remap(t, 7.4, 8.0, ease_out_cubic)
+        lab = text_sprite("01 / 输入", D.GREY, "sans", 15, tracking=4.0)
+        over(img, lab.with_opacity(0.65 * p * (1 - push)), 140, 214)
+    # teal band wipes up into S3
+    band = remap(t, 13.98, 14.38, ease_in_cubic)
+    if band > 0:
+        yc = focus_y
+        hh = int(band * D.H * 1.25)
+        band_img = gradient_sprite(D.W, max(2, hh), [(0, D.hexc("#062019")), (0.5, D.hexc("#0E7C6B")), (1, D.hexc("#062019"))], (0, 0), (0, hh))
+        over(img, band_img, 0, int(yc - hh / 2), min(1.0, band * 1.5))
+        if band > 0.5:
+            u = (band - 0.5) / 0.5
+            img = img * (1 - u * 0.9) + u * 0.9
+    return img
