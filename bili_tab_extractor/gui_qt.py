@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import (Qt, QSize, QThread, Signal, QEasingCurve,
                             QPropertyAnimation, QTimer)
-from PySide6.QtGui import QImage, QPixmap, QIcon, QPainter, QColor
+from PySide6.QtGui import QImage, QPixmap, QIcon, QPainter, QColor, QBrush
 from PySide6.QtWidgets import ( 
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QProgressBar, QTextEdit,
@@ -1231,6 +1231,44 @@ class ReviewWindow(QMainWindow):
         self.undo_btn.setEnabled(bool(self._undo_stack))
         self.redo_btn.setEnabled(bool(self._redo_stack))
 
+    def _row_item_content(self, i: int):
+        """第 i 行列表项内容：(缩略图, 文本, 背景色|None, tooltip|None)。"""
+        row = self.rows[i]
+        key = (row.source, row.index)
+        pm = self._thumb_cache.get(key)
+        if pm is None:
+            pm = bgr_to_pixmap(row.image, THUMB_W, THUMB_H)
+            self._thumb_cache[key] = pm
+        text = f"第 {i + 1} 行   {row.image.shape[1]}×{row.image.shape[0]}   t={row.time:.0f}s"
+        # AI 识别内容摘要
+        a = self._ai_analyses.get(i) if self._ai_done else None
+        if a:
+            if a.get("chords"):
+                text += "   " + "-".join(a["chords"][:4])
+            if a.get("lyrics"):
+                text += f"   「{a['lyrics'][:10]}」"
+        elif row.bars:
+            text += f"   {bar_label(row.bars)}"
+        frag = i in self._incomplete_rows
+        ai_dup = i in self._ai_dups
+        pix_dup = i in self._similar
+        bg = None
+        tip = None
+        if frag:
+            text += "   ✖ 碎片/空谱"
+            bg = "#ffcdd2"
+            tip = "AI 判定为残谱/碎片（内容不完整），建议删除"
+        elif ai_dup:
+            text += "   ⚠ AI 判重复"
+            group_color = self._dup_group_color()
+            bg = group_color.get(i, "#ffe0b2")
+            gi = next((k for k, g in enumerate(self._ai_dup_groups) if i in g), -1)
+            tip = f"疑似重复（第 {gi + 1} 组）"
+        elif pix_dup:
+            text += "   ⚠ 疑似重复"
+            bg = "#eceff1"
+        return pm, text, bg, tip
+
     def _render_list(self):
         # 记录"当前顶部可见项"的 key（比滚动像素值更稳定：行高不同也不会跳）
         sb = self.list_widget.verticalScrollBar()
@@ -1253,48 +1291,16 @@ class ReviewWindow(QMainWindow):
                     top_key = (r.source, r.index)
         self.list_widget.clear()
         self._thumbs.clear()
-        group_color = self._dup_group_color()
-        for i, row in enumerate(self.rows):
-            # 缩略图缓存（key 用行标识，稳定不随删除变化）→ 重建列表时不用重新缩放
-            key = (row.source, row.index)
-            pm = self._thumb_cache.get(key)
-            if pm is None:
-                pm = bgr_to_pixmap(row.image, THUMB_W, THUMB_H)
-                self._thumb_cache[key] = pm
+        for i in range(len(self.rows)):
+            pm, text, bg, tip = self._row_item_content(i)
             self._thumbs[i] = pm
-            text = f"第 {i + 1} 行   {row.image.shape[1]}×{row.image.shape[0]}   t={row.time:.0f}s"
-            # AI 识别内容摘要
-            a = self._ai_analyses.get(i) if self._ai_done else None
-            if a:
-                if a.get("chords"):
-                    text += "   " + "-".join(a["chords"][:4])
-                if a.get("lyrics"):
-                    text += f"   「{a['lyrics'][:10]}」"
-            elif row.bars:
-                text += f"   {bar_label(row.bars)}"
-            # 标记优先级：碎片/空谱（红） > AI 重复（橙） > 像素相似（浅黄）
-            frag = i in self._incomplete_rows
-            ai_dup = i in self._ai_dups
-            pix_dup = i in self._similar
-            if frag:
-                text += "   ✖ 碎片/空谱"
-            elif ai_dup:
-                text += "   ⚠ AI 判重复"
-            elif pix_dup:
-                text += "   ⚠ 疑似重复"
             item = QListWidgetItem(QIcon(pm), text)
             item.setData(Qt.UserRole, i)
             item.setSizeHint(QSize(THUMB_W, THUMB_H + 24))
-            if frag:
-                item.setBackground(QColor("#ffcdd2"))  # 浅红：残谱/碎片
-                item.setToolTip("AI 判定为残谱/碎片（内容不完整），建议删除")
-            elif ai_dup:
-                # 组色：不同重复组不同黄色（与导航方块一致）
-                item.setBackground(QColor(group_color.get(i, "#ffe0b2")))
-                gi = next((k for k, g in enumerate(self._ai_dup_groups) if i in g), -1)
-                item.setToolTip(f"疑似重复（第 {gi + 1} 组）")
-            elif pix_dup:
-                item.setBackground(QColor("#eceff1"))  # 灰：像素相似
+            if bg:
+                item.setBackground(QColor(bg))
+            if tip:
+                item.setToolTip(tip)
             self.list_widget.addItem(item)
         # 更新跳转范围与方块导航
         self.jump_spin.setRange(1, max(1, len(self.rows)))
@@ -1798,35 +1804,43 @@ class ReviewWindow(QMainWindow):
         self.main_win._log(msg)
 
     def _delete_selected(self):
+        """删除选中行：增量移除列表项（不重建列表 → 滚动/页面完全不跳）。"""
         item = self.list_widget.currentItem()
         if item is None:
             return
         idx = item.data(Qt.UserRole)
-        # 记录删除行的滚动锚点（删除行在视口中的相对位置，0=顶部）
-        sb = self.list_widget.verticalScrollBar()
-        vp_top = sb.value()
-        rect = self.list_widget.visualItemRect(item)
-        anchor_off = rect.top() - vp_top   # 删除行相对视口顶部偏移
+        pos = self.list_widget.row(item)   # 列表位置（= idx，当前顺序一致）
 
         self._push_undo()   # 删除前快照（支持 Ctrl+Z 撤销）
         del self.rows[idx]
-        # 重映射标记（保留 AI/相似），不重算 → 删除瞬间完成
-        self._remap_after_delete(idx)
+        self._remap_after_delete(idx)   # 重映射标记（不重算，快）
         self._active_group = None
-        self._render_list()
+
+        # 关键：增量移除这一项，不 clear/重建 → 滚动位置不变
+        self.list_widget.takeItem(pos)
+        # 更新剩余项的索引/文本/图标/背景（行号变了）
+        for i in range(self.list_widget.count()):
+            it = self.list_widget.item(i)
+            pm, text, bg, tip = self._row_item_content(i)
+            it.setIcon(QIcon(pm))
+            it.setText(text)
+            it.setData(Qt.UserRole, i)
+            if bg:
+                it.setBackground(QColor(bg))
+            else:
+                it.setBackground(QBrush())
+            it.setToolTip(tip or "")
 
         n = len(self.rows)
         if n <= 0:
-            self.status_top.setText("已删除全部行")
+            self._refresh_nav_grid()
+            self.status_top.setText("已删除全部行（可 Ctrl+Z 撤销）")
             return
-        # 选中"删除位置的那一行"（即原来的下一行；删的是最后一行则选上一行）
-        ni = min(idx, n - 1)
-        it = self.list_widget.item(ni)
-        if it is not None:
-            self.list_widget.setCurrentItem(it)
-            # 保持删除行原来的视口位置（不乱跳）：用滚动条精确对齐
-            self.list_widget.scrollToItem(it, QAbstractItemView.PositionAtTop)
-            sb.setValue(max(0, sb.value() + anchor_off))
+        # 选中原位置的下一行（删的是最后一行则选上一行）
+        ni = min(pos, self.list_widget.count() - 1)
+        self.list_widget.setCurrentItem(self.list_widget.item(ni))
+        self.jump_spin.setRange(1, max(1, n))
+        self._refresh_nav_grid()
         self.status_top.setText(f"已删除，剩 {n} 行（可 Ctrl+Z 撤销）")
 
     def _recover(self):
