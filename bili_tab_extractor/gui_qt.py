@@ -1435,13 +1435,11 @@ class ReviewWindow(QMainWindow):
             self._activate_dup_group(gi)
 
     def _activate_dup_group(self, gi: int):
-        """激活重复组：高亮整组、显示浮动操作条（含「保留组内第一个」）。"""
+        """激活重复组：高亮整组、显示浮动操作条（不滚动页面，避免跳动）。"""
         if gi is None or not (0 <= gi < len(self._nav_group_rows)):
             return
         self._active_group = gi
         g = self._nav_group_rows[gi]
-        if g:
-            self._jump_to_index(g[0])
         self._update_keep_first_btn()
         self._highlight_nav(g[0] if g else -1)
 
@@ -1501,7 +1499,7 @@ class ReviewWindow(QMainWindow):
         self._remap_after_delete_rows(to_del)
         self.rows = [r for i, r in enumerate(self.rows) if i not in to_del]
         self._active_group = None
-        self._render_list()
+        self._remove_list_items(to_del)   # 增量删除（页面不跳）
         msg = f"已批量保留各组第一个：删除 {len(to_del)} 行，剩 {len(self.rows)} 行（可撤销）"
         self.status_top.setText(msg)
         self._log(msg)
@@ -1777,8 +1775,29 @@ class ReviewWindow(QMainWindow):
                 return g
         return None
 
+    def _remove_list_items(self, to_del: set[int]):
+        """增量删除列表项（不重建列表 → 页面不跳），并刷新剩余项。"""
+        # 从后往前删（避免前面的删除导致后面位置变化）
+        for pos in sorted(to_del, reverse=True):
+            if 0 <= pos < self.list_widget.count():
+                self.list_widget.takeItem(pos)
+        # 更新剩余项（行号/图标/背景）
+        for i in range(self.list_widget.count()):
+            it = self.list_widget.item(i)
+            pm, text, bg, tip = self._row_item_content(i)
+            it.setIcon(QIcon(pm))
+            it.setText(text)
+            it.setData(Qt.UserRole, i)
+            if bg:
+                it.setBackground(QColor(bg))
+            else:
+                it.setBackground(QBrush())
+            it.setToolTip(tip or "")
+        self.jump_spin.setRange(1, max(1, len(self.rows)))
+        self._refresh_nav_grid()
+
     def _keep_first_of_group(self, group: list[int]):
-        """保留组内第一行，删除其余（可 Ctrl+Z 撤销）。"""
+        """保留组内第一行，删除其余（增量删除，页面不跳；可 Ctrl+Z 撤销）。"""
         valid = sorted(x for x in group if 0 <= x < len(self.rows))
         if len(valid) < 2:
             return
@@ -1790,7 +1809,18 @@ class ReviewWindow(QMainWindow):
             self.result.all_rows.append(self.rows[i])
         self._remap_after_delete_rows(to_del)
         self.rows = [r for i, r in enumerate(self.rows) if i not in to_del]
-        self._render_list()
+        self._active_group = None
+        sb = self.list_widget.verticalScrollBar()
+        v_before = sb.value()
+        self._remove_list_items(to_del)
+        # 选中保留的那一行；setCurrentItem 的自动滚动是延迟执行的，
+        # 所以在事件循环后恢复原滚动位置（页面不跳）。
+        if self.list_widget.count() > 0:
+            ni = min(keep, self.list_widget.count() - 1)
+            it = self.list_widget.item(ni)
+            if it is not None:
+                self.list_widget.setCurrentItem(it)
+                QTimer.singleShot(0, lambda: sb.setValue(v_before))
         msg = f"已保留第 {keep + 1} 行，删除组内其余 {len(to_del)} 行（可 Ctrl+Z 撤销）"
         self.status_top.setText(msg)
         self._log(msg)
