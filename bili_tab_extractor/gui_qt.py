@@ -17,13 +17,13 @@ import re
 import shutil
 import sys
 import time
-
+ 
 import cv2
 import numpy as np
 from PySide6.QtCore import (Qt, QSize, QThread, Signal, QEasingCurve,
                             QPropertyAnimation, QTimer)
 from PySide6.QtGui import QImage, QPixmap, QIcon, QPainter, QColor
-from PySide6.QtWidgets import (
+from PySide6.QtWidgets import ( 
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QProgressBar, QTextEdit,
     QListWidget, QListWidgetItem, QSplitter, QDialog, QScrollArea,
@@ -1023,13 +1023,20 @@ class ReviewWindow(QMainWindow):
 
         # 浮动操作条：激活重复组时出现在导航区正下方（靠近操作，不用跑到底部）
         self.float_bar = QWidget()
-        self.float_bar.setStyleSheet(
-            "QWidget#floatBar { background: #263238; border-radius: 6px; }")
         self.float_bar.setObjectName("floatBar")
+        self.float_bar.setStyleSheet(
+            "QWidget#floatBar {"
+            "  background: #ffffff;"
+            "  border: 1px solid #d0d0d0;"
+            "  border-radius: 6px;"
+            "}")
+        self.float_bar.setAttribute(Qt.WA_StyledBackground, True)
         bar_lay = QHBoxLayout(self.float_bar)
         bar_lay.setContentsMargins(10, 6, 10, 6)
         self.float_label = QLabel("")
-        self.float_label.setStyleSheet("color: #eceff1; font-weight: 600;")
+        self.float_label.setStyleSheet(
+            "color: #1a1a1a; font-weight: 700; font-size: 13px;"
+            "border: none; background: transparent;")
         bar_lay.addWidget(self.float_label)
         bar_lay.addStretch(1)
         self.keep_first_btn = QPushButton("保留组内第一个")
