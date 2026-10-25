@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
 )
 
-from pipeline import process, TabRow, PipelineResult
+from pipeline import ProcessCancelled, PipelineResult, TabRow, process
 from stitch import make_pdf_from_rows, verify_and_clean_pdf
 from util import imread, imwrite, log
 from rows import row_fingerprint, _fp_dist
@@ -216,8 +216,15 @@ class Worker(QThread):
                 allow_manual=False,  # 后台线程不能弹手动框选窗口
                 api_key=load_api_key(),  # 横向滚动谱面用 VLM 读小节号
                 progress=lambda text, frac: self.progress.emit(text, frac),
+                should_stop=self.isInterruptionRequested,  # 支持取消
             )
+            if self.isInterruptionRequested():
+                # 用户已取消：丢弃结果，不弹核验窗口
+                self.error.emit("已取消")
+                return
             self.done.emit(result, self.auto)
+        except ProcessCancelled:
+            self.error.emit("已取消")
         except SystemExit as e:
             self.error.emit(f"处理被终止: {e}")
         except Exception as e:
@@ -346,10 +353,18 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.log_text)
 
     def _ai_status_text(self) -> str:
+        """AI 状态文案（不显示 Key 片段，避免截图/日志泄露凭据）。"""
+        from vlm import load_model, load_provider
+
         key = load_api_key()
         if key:
-            return f"AI：已配置 Key（{key[:6]}…{key[-4:]}），核验页可用 AI 识别去重"
-        return "AI：未配置 Key（点「AI 设置」填写，启用 AI 识别/去重）"
+            try:
+                prov = load_provider()
+                model = load_model()
+                return f"AI：已配置（{prov} / {model}）—— 点「AI 设置」可修改"
+            except Exception:
+                return "AI：已配置 —— 点「AI 设置」可修改"
+        return "AI：未配置（点「AI 设置」填写，启用 AI 识别/去重）"
 
     def _open_settings(self):
         """AI 设置对话框：配置 API Key。"""
@@ -441,8 +456,14 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def _cancel(self):
-        self.status_label.setText("正在停止…（等待当前步骤完成）")
-        self._log("已请求取消")
+        """真正取消：通知 worker 中断，各阶段边界会停下来。"""
+        if self.worker and self.worker.isRunning():
+            self.worker.requestInterruption()
+            self.status_label.setText("正在停止…（当前步骤结束即停）")
+            self.cancel_btn.setEnabled(False)
+            self._log("已请求取消（等待当前步骤结束）")
+        else:
+            self.status_label.setText("就绪")
 
     def _on_progress(self, text, frac):
         self.status_label.setText(text)
@@ -481,6 +502,12 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(True)
         self.auto_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        if err == "已取消":
+            # 用户主动取消：不算失败，不弹错误框
+            self.status_label.setText("已取消")
+            self.progress.setValue(0)
+            self._log("已取消处理")
+            return
         self.status_label.setText("处理失败")
         self._log("错误: " + err)
         QMessageBox.critical(self, "处理失败", err)
@@ -691,11 +718,14 @@ class BarReader(QThread):
         self.rows = rows
         self.cache_path = cache_path
         self.api_key = api_key
+        self.stats: dict = {}   # analyze_rows 回填：failed/total
+        self.model: str = ""
 
     def run(self):
         import threading
 
         import vlm as _vlm
+        from vlm import load_model
 
         def asker(failed_model: str, err_msg: str, use_model: str) -> bool:
             """跨线程：发信号到主线程弹框确认，阻塞等待用户选择。"""
@@ -705,15 +735,22 @@ class BarReader(QThread):
             return bool(ctx["ok"])
 
         _vlm.set_fallback_asker(asker)
+        # 必须传当前提供商配置的模型（曾经漏传 → 用 DEFAULT_MODEL 打到错误的
+        # provider → HTTP 400 全失败，却显示"分析完成"）。
+        model = load_model()
+        self.model = model
+        stats: dict = {}
         try:
             results = analyze_rows(
-                self.rows, api_key=self.api_key, cache_path=self.cache_path,
+                self.rows, api_key=self.api_key, model=model,
+                cache_path=self.cache_path,
                 progress=lambda d, t: self.progress.emit(d, t),
-                max_workers=4)
+                max_workers=4, stats=stats)
             # 写回各行的 bars 字段（兼容旧渲染）
             for i, a in results.items():
                 if i < len(self.rows):
                     self.rows[i].bars = list(a.get("bar_numbers") or [])
+            self.stats = stats
             self.done.emit(results)
         except SystemExit as e:
             self.error.emit(f"处理被终止: {e}")
@@ -724,7 +761,9 @@ class BarReader(QThread):
 
 
 class PreviewView(QGraphicsView):
-    """右侧大图预览：滚轮缩放 + 左键拖拽平移。"""
+    """右侧大图预览：滚轮缩放 + 左键拖拽平移 + 双击全屏。"""
+
+    double_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -739,8 +778,9 @@ class PreviewView(QGraphicsView):
         self.scale(factor, factor)
 
     def mouseDoubleClickEvent(self, event):
-        # 双击由父窗口处理（打开全屏大图），这里不拦截
-        super().mouseDoubleClickEvent(event)
+        """双击 → 打开全屏大图（由父窗口处理）。"""
+        self.double_clicked.emit()
+        event.accept()
 
 
 class ZoomDialog(QDialog):
@@ -870,7 +910,16 @@ class ReviewWindow(QMainWindow):
         QMessageBox.critical(self, "AI 分析失败", err)
 
     def _on_ai_done(self, analyses: dict):
-        """AI 分析完成：标记碎片行、重复组，显示识别内容。"""
+        """AI 分析完成：标记碎片行、重复组，显示识别内容。
+
+        重要：失败的行也会返回空 dict，必须检查失败计数——否则 AI 全部失败时
+        用户会误以为"AI 已检查过"（曾经的真实 bug）。
+        """
+        stats = getattr(self._bar_thread, "stats", {}) or {}
+        failed = int(stats.get("failed", 0) or 0)
+        total = int(stats.get("total", len(self.rows)) or len(self.rows))
+        model = getattr(self._bar_thread, "model", "") or ""
+
         self._ai_analyses = analyses
         self._ai_done = True
         self.read_bars_btn.setEnabled(True)
@@ -886,10 +935,30 @@ class ReviewWindow(QMainWindow):
 
         n_frag = len(self._incomplete_rows)
         n_dup = len(self._ai_dup_groups)
-        self.status_top.setText(
-            f"AI 分析完成：{len(analyses)} 行｜碎片/空谱 {n_frag} 行｜疑似重复 {n_dup} 组")
-        self._log(f"AI 分析完成：碎片 {n_frag} 行，重复 {n_dup} 组")
-        self.clean_btn.setEnabled(True)
+        if total > 0 and failed >= total:
+            # 全部失败：绝不能说"分析完成"
+            self.status_top.setText(
+                f"⚠ AI 未返回结果（{failed}/{total} 行失败，模型 {model}）"
+                f"—— 请检查模型/额度，详见日志")
+            self.status_top.setStyleSheet(
+                "color: #c62828; font-weight: 700;")
+            self._log(f"⚠ AI 全部失败：{failed}/{total} 行（模型 {model}）。"
+                      f"请检查「AI 设置」中的提供商/模型/额度。")
+            self.clean_btn.setEnabled(False)
+        elif failed > 0:
+            self.status_top.setText(
+                f"⚠ AI 部分失败（{failed}/{total} 行），结果不完整"
+                f"—— 重复/碎片判断可能漏检")
+            self.status_top.setStyleSheet(
+                "color: #e65100; font-weight: 700;")
+            self._log(f"⚠ AI 部分失败：{failed}/{total} 行（模型 {model}）")
+            self.clean_btn.setEnabled(True)
+        else:
+            self.status_top.setText(
+                f"AI 分析完成：{len(analyses)} 行｜碎片/空谱 {n_frag} 行｜疑似重复 {n_dup} 组")
+            self.status_top.setStyleSheet("")
+            self._log(f"AI 分析完成：碎片 {n_frag} 行，重复 {n_dup} 组")
+            self.clean_btn.setEnabled(True)
         self._render_list()
 
     def _on_read_bars(self):
@@ -897,30 +966,49 @@ class ReviewWindow(QMainWindow):
         self._on_ai_analyze()
 
     def _compute_similar(self):
-        """检测大致相同的行（指纹距离 < 阈值 且 像素差异小），标黄供人工核验。"""
+        """检测大致相同的行（指纹筛选 + 320px 降采样比较，避免 O(n²) 全分辨率卡顿）。
+
+        旧实现对每对行都做全分辨率像素比较：200 行要 212 秒（核验窗口假死）。
+        现在先用 128 维指纹筛候选（200 行 ~0.1s），只对候选做降采样比较。
+        """
         self._similar.clear()
-        if len(self.rows) < 2:
+        self._similar_groups = []
+        n = len(self.rows)
+        if n < 2:
             return
-        fps = [row_fingerprint(r.image) for r in self.rows]
-        n = len(fps)
+        # 预计算：指纹 + 320px 灰度缩略图
+        fps: list = []
+        smalls: list = []
+        for r in self.rows:
+            try:
+                fps.append(row_fingerprint(r.image))
+                g = cv2.cvtColor(r.image, cv2.COLOR_BGR2GRAY)
+                h, w = g.shape
+                tw = 320
+                th = max(1, int(h * tw / max(w, 1)))
+                smalls.append(cv2.resize(g, (tw, th), interpolation=cv2.INTER_AREA))
+            except Exception:
+                fps.append(None)
+                smalls.append(None)
+
         for i in range(n):
+            if fps[i] is None:
+                continue
             for j in range(i + 1, n):
-                if _fp_dist(fps[i], fps[j]) >= 6.0:
+                if fps[j] is None:
                     continue
-                # 像素级确认：高度对齐后比较，差异小才算"大致相同"
-                a = self.rows[i].image
-                b = self.rows[j].image
-                # 形状安全：行高/行宽可能不等（crop_screen_top 逐帧裁掉不同
-                # 高度的顶部演奏画面），统一到较小尺寸再逐像素比较，否则
-                # numpy 会报 "operands could not be broadcast together"。
-                h = min(a.shape[0], b.shape[0])
-                w = min(a.shape[1], b.shape[1])
-                if h <= 0 or w <= 0:
+                # ① 指纹粗筛（宽松阈值，只是排除明显不同的行）
+                if _fp_dist(fps[i], fps[j]) > 25.0:
                     continue
-                a2 = a if a.shape[:2] == (h, w) else cv2.resize(a, (w, h))
-                b2 = b if b.shape[:2] == (h, w) else cv2.resize(b, (w, h))
-                diff = np.abs(a2.astype(np.int16) - b2.astype(np.int16)) > 40
-                if float(diff.mean()) < 0.05:
+                # ② 降采样灰度比较
+                a, b = smalls[i], smalls[j]
+                if a.shape != b.shape:
+                    try:
+                        b = cv2.resize(b, (a.shape[1], a.shape[0]))
+                    except Exception:
+                        continue
+                diff = np.abs(a.astype(np.int16) - b.astype(np.int16)) > 30
+                if float(diff.mean()) < 0.02:
                     self._similar.setdefault(i, []).append(j)
                     self._similar.setdefault(j, []).append(i)
         self._similar_groups = self._build_groups()
@@ -951,14 +1039,13 @@ class ReviewWindow(QMainWindow):
         lay = QVBoxLayout(central)
         lay.setContentsMargins(10, 10, 10, 10)
 
-        # 顶部：标题 + 导航看板
+        # 顶部：标题 + 计数（存成成员，行数/组数变化时刷新）
         top = QHBoxLayout()
-        top.addWidget(QLabel(f"「{self.result.title}」  共 {len(self.rows)} 行谱面"))
-        if self._similar_groups:
-            n_dup = sum(len(g) for g in self._similar_groups)
-            lbl = QLabel(f"  疑似重复 {len(self._similar_groups)} 组（{n_dup} 行，已标黄）")
-            lbl.setStyleSheet("color: #b8860b; font-weight: bold;")
-            top.addWidget(lbl)
+        self.count_label = QLabel("")
+        top.addWidget(self.count_label)
+        self.dup_label = QLabel("")
+        self.dup_label.setStyleSheet("color: #b8860b; font-weight: bold;")
+        top.addWidget(self.dup_label)
         self.status_top = QLabel("")
         top.addWidget(self.status_top)
         top.addStretch(1)
@@ -1004,9 +1091,10 @@ class ReviewWindow(QMainWindow):
         nav_title = QLabel("导航")
         nav_title.setObjectName("sectionTitle")
         nav_row.addWidget(nav_title)
-        # 图例：绿=正常 / 黄=疑似重复 / 红=残谱
+        # 图例：绿=正常 / 黄=疑似重复 / 橙=AI组 / 灰=像素相似 / 红=残谱
         for color, text in (("#81c784", "正常"),
                             ("#ffd54f", "疑似重复"),
+                            ("#b0bec5", "像素相似"),
                             ("#ef5350", "残谱")):
             box = QLabel()
             box.setFixedSize(12, 12)
@@ -1014,7 +1102,11 @@ class ReviewWindow(QMainWindow):
                 f"background:{color}; border:1px solid #999; border-radius:2px;")
             nav_row.addWidget(box)
             nav_row.addWidget(QLabel(text))
-        nav_row.addSpacing(14)
+        nav_row.addSpacing(10)
+        self.nav_count_label = QLabel("")
+        self.nav_count_label.setObjectName("hint")
+        nav_row.addWidget(self.nav_count_label)
+        nav_row.addSpacing(10)
         self.nav_container = QWidget()
         self.nav_grid = QGridLayout(self.nav_container)
         self.nav_grid.setContentsMargins(0, 0, 0, 0)
@@ -1105,6 +1197,7 @@ class ReviewWindow(QMainWindow):
         self.preview_view.setScene(self.preview_scene)
         self.preview_view.setBackgroundBrush(QColor("#f5f5f5"))
         self.preview_view.setToolTip("滚轮缩放 · 按住左键拖拽平移 · 双击全屏")
+        self.preview_view.double_clicked.connect(self._open_preview_zoom)
         self.preview_item = None
         self.preview_pixmap = None
         self._preview_fit_done = False
@@ -1289,6 +1382,20 @@ class ReviewWindow(QMainWindow):
             bg = "#eceff1"
         return pm, text, bg, tip
 
+    def _update_counts(self):
+        """刷新顶部计数（行数/重复组数）—— 删行后必须更新，否则显示过期数字。"""
+        try:
+            self.count_label.setText(f"「{self.result.title}」  共 {len(self.rows)} 行谱面")
+            groups = self._all_dup_groups()
+            if groups:
+                n = sum(len(g) for g in groups)
+                self.dup_label.setText(f"  疑似重复 {len(groups)} 组（{n} 行）")
+                self.dup_label.setVisible(True)
+            else:
+                self.dup_label.setVisible(False)
+        except Exception:
+            pass
+
     def _render_list(self):
         # 记录"当前顶部可见项"的 key（比滚动像素值更稳定：行高不同也不会跳）
         sb = self.list_widget.verticalScrollBar()
@@ -1325,6 +1432,20 @@ class ReviewWindow(QMainWindow):
         # 更新跳转范围与方块导航
         self.jump_spin.setRange(1, max(1, len(self.rows)))
         self._refresh_nav_grid()
+        self._update_counts()
+        # 空态：删空后给引导（预览回到提示态、禁用删除/输出）
+        if not self.rows:
+            self.preview_scene.clear()
+            self.preview_hint = self.preview_scene.addText(
+                "暂无谱行\n\n可点「撤销（Ctrl+Z）」恢复，或「找回被丢弃的行…」")
+            self.preview_hint.setDefaultTextColor(QColor("#999999"))
+            self.preview_hint.setPos(30, 30)
+            self._preview_fit_done = False
+            if hasattr(self, "del_btn"):
+                self.del_btn.setEnabled(False)
+        else:
+            if hasattr(self, "del_btn"):
+                self.del_btn.setEnabled(True)
         # 恢复滚动位置：优先定位到"原来的顶部项"（无跳动），找不到再按像素偏移恢复
         if top_key is not None:
             for pos in range(self.list_widget.count()):
@@ -1352,10 +1473,10 @@ class ReviewWindow(QMainWindow):
         return out
 
     def _refresh_nav_grid(self):
-        """方块阵列导航：按重复组排列（组内连续、组间留空隙），点击跳转/激活组。
+        """方块阵列导航：**每一行都生成一个方块**（按行号顺序），点击跳转/激活组。
 
-        颜色：绿=正常 / 红=残谱 / 黄系=重复组（不同组不同黄）。
-        重复组方块缓慢闪烁吸引注意；选中行粗边框；激活/悬停组整组高亮。
+        重复组只用于着色/分组空隙/tooltip，不再做"组连续"的假设
+        （曾经用 `i = groups[gi][-1] + 1` 跳行，组不相邻时会漏掉中间所有行）。
         """
         for btn in self.nav_buttons:
             btn.setParent(None)
@@ -1366,7 +1487,6 @@ class ReviewWindow(QMainWindow):
         self._nav_group_rows = []
         group_color = self._dup_group_color()
 
-        # 重复组（AI + 像素相似）用于分组排列
         groups = self._all_dup_groups()
         row2gi: dict[int, int] = {}
         for gi, g in enumerate(groups):
@@ -1375,44 +1495,26 @@ class ReviewWindow(QMainWindow):
                 row2gi[r] = gi
                 self._nav_group_of[r] = gi
 
-        # 构建槽位：组 = 连续方块 + 组后留 1 空格；散行 = 1 格
-        slots: list[tuple[str, int]] = []
-        i = 0
-        n = len(self.rows)
-        while i < n:
-            gi = row2gi.get(i)
-            if gi is not None and i == groups[gi][0]:
-                slots.append(("group", gi))
-                i = groups[gi][-1] + 1
-            else:
-                slots.append(("row", i))
-                i += 1
-
         cols = 24
         row = 0
         col = 0
-        for kind, payload in slots:
-            if kind == "row":
-                self._make_nav_button(payload, row2gi.get(payload, -1),
-                                      group_color.get(payload, ""), row, col)
+        prev_gi = -1
+        for i in range(len(self.rows)):
+            gi = row2gi.get(i, -1)
+            # 组间空隙：遇到新组的第一个方块时留一列
+            if gi >= 0 and gi != prev_gi and col > 0:
                 col += 1
                 if col >= cols:
                     col = 0
                     row += 1
-            else:
-                gi = payload
-                for idx in groups[gi]:
-                    self._make_nav_button(idx, gi, group_color.get(idx, "#ffd54f"),
-                                          row, col)
-                    col += 1
-                    if col >= cols:
-                        col = 0
-                        row += 1
-                # 组间空隙（留一列空白）
-                col += 1
-                if col >= cols:
-                    col = 0
-                    row += 1
+            self._make_nav_button(i, gi, group_color.get(i, ""), row, col)
+            col += 1
+            if col >= cols:
+                col = 0
+                row += 1
+            prev_gi = gi
+        if hasattr(self, "nav_count_label"):
+            self.nav_count_label.setText(f"{len(self.rows)} 行")
         cur = self.list_widget.currentRow()
         self._highlight_nav(cur if cur >= 0 else -1)
 
@@ -1521,6 +1623,7 @@ class ReviewWindow(QMainWindow):
         self.rows = [r for i, r in enumerate(self.rows) if i not in to_del]
         self._active_group = None
         self._remove_list_items(to_del)   # 增量删除（页面不跳）
+        self._update_keep_first_btn()     # 隐藏浮动条
         msg = f"已批量保留各组第一个：删除 {len(to_del)} 行，剩 {len(self.rows)} 行（可撤销）"
         self.status_top.setText(msg)
         self._log(msg)
@@ -1661,8 +1764,11 @@ class ReviewWindow(QMainWindow):
                 self._clear_active_group()
                 self._highlight_nav(self.list_widget.currentRow())
 
-    def _set_preview(self, image):
-        """右侧大图预览（QGraphicsView，支持滚轮缩放 + 拖拽）。"""
+    def _set_preview(self, image, reset_zoom: bool = False):
+        """右侧大图预览（QGraphicsView，支持滚轮缩放 + 拖拽）。
+
+        reset_zoom=False 时保持用户当前缩放级别（换行不重置缩放）。
+        """
         from PySide6.QtGui import QPixmap
         from PySide6.QtWidgets import QGraphicsPixmapItem
 
@@ -1676,10 +1782,21 @@ class ReviewWindow(QMainWindow):
         self.preview_item = QGraphicsPixmapItem(self.preview_pixmap)
         self.preview_scene.addItem(self.preview_item)
         self.preview_scene.setSceneRect(0, 0, w, h)
-        # 首次显示：适应窗口；之后保持用户缩放级别
-        self.preview_view.resetTransform()
-        self.preview_view.fitInView(self.preview_item, Qt.KeepAspectRatio)
-        self._preview_fit_done = True
+        # 首次显示 / 明确要求时：适应窗口；否则保持用户缩放级别
+        if reset_zoom or not self._preview_fit_done:
+            self.preview_view.resetTransform()
+            self.preview_view.fitInView(self.preview_item, Qt.KeepAspectRatio)
+            self._preview_fit_done = True
+
+    def _open_preview_zoom(self):
+        """双击预览区 → 全屏大图（当前选中行）。"""
+        cur = self.list_widget.currentRow()
+        if cur < 0 or cur >= len(self.rows):
+            return
+        row = self.rows[cur]
+        dlg = ZoomDialog(row.image.copy(),
+                         f"第 {cur + 1} 行预览（t={row.time:.0f}s）", self)
+        dlg.exec()
 
     def _on_double_click(self, item):
         orig = item.data(Qt.UserRole)
@@ -1816,6 +1933,7 @@ class ReviewWindow(QMainWindow):
             it.setToolTip(tip or "")
         self.jump_spin.setRange(1, max(1, len(self.rows)))
         self._refresh_nav_grid()
+        self._update_counts()
 
     def _keep_first_of_group(self, group: list[int]):
         """保留组内第一行，删除其余（增量删除，页面不跳；可 Ctrl+Z 撤销）。"""
@@ -1834,6 +1952,7 @@ class ReviewWindow(QMainWindow):
         sb = self.list_widget.verticalScrollBar()
         v_before = sb.value()
         self._remove_list_items(to_del)
+        self._update_keep_first_btn()   # 隐藏浮动条（组已处理完）
         # 选中保留的那一行；setCurrentItem 的自动滚动是延迟执行的，
         # 所以在事件循环后恢复原滚动位置（页面不跳）。
         if self.list_widget.count() > 0:
@@ -1885,6 +2004,8 @@ class ReviewWindow(QMainWindow):
         n = len(self.rows)
         if n <= 0:
             self._refresh_nav_grid()
+            self._update_counts()
+            self._update_keep_first_btn()
             self.status_top.setText("已删除全部行（可 Ctrl+Z 撤销）")
             return
         # 选中原位置的下一行（删的是最后一行则选上一行）
@@ -1892,6 +2013,8 @@ class ReviewWindow(QMainWindow):
         self.list_widget.setCurrentItem(self.list_widget.item(ni))
         self.jump_spin.setRange(1, max(1, n))
         self._refresh_nav_grid()
+        self._update_counts()          # 刷新"共 N 行/疑似重复 X 组"
+        self._update_keep_first_btn()  # 当前行不在重复组时隐藏浮动条
         self.status_top.setText(f"已删除，剩 {n} 行（可 Ctrl+Z 撤销）")
 
     def _recover(self):
@@ -1928,7 +2051,12 @@ class ReviewWindow(QMainWindow):
         self._render_list()
 
     def _confirm_output(self):
-        self.main_win._output(self._current_rows(), self.result.title)
+        rows = self._current_rows()
+        if not rows:
+            # 没有可输出的行：不关闭窗口（否则用户会看到"弹个警告然后窗口关了"）
+            QMessageBox.warning(self, "无法输出", "当前没有可输出的谱行。")
+            return
+        self.main_win._output(rows, self.result.title)
         self.close()
 
     def _auto_output(self):

@@ -313,7 +313,16 @@ def _post_once(key: str, model: str, prompt: str, image_data_url: str,
         if "FreeTierOnly" in code or "AllocationQuota" in code:
             raise RuntimeError(f"模型 {model} 免费额度已用尽（403 {code}）")
         raise RuntimeError(f"模型 {model} 无权访问（403 {code}）")
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        # 400/404/5xx 等也转成 RuntimeError，否则 requests.HTTPError 会在
+        # 上层被当成"未知异常"吞掉，且降级链不会触发（曾经导致 AI 全失败
+        # 却显示"分析完成"）。
+        detail = ""
+        try:
+            detail = str(resp.json())[:200]
+        except Exception:
+            detail = (resp.text or "")[:200]
+        raise RuntimeError(f"模型 {model} 请求失败（HTTP {resp.status_code}）：{detail}")
     data = resp.json()
     try:
         text = data["choices"][0]["message"]["content"]

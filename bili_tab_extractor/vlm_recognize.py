@@ -94,10 +94,13 @@ def _normalize_analysis(data: dict) -> dict:
 
 def analyze_rows(rows, api_key: str | None = None, model: str | None = None,
                  cache_path: str | None = None, progress=None,
-                 max_workers: int = 4, stop_flag=None) -> dict[int, dict]:
+                 max_workers: int = 4, stop_flag=None,
+                 stats: dict | None = None) -> dict[int, dict]:
     """批量分析所有行（并发 + 缓存）。
 
     progress: callable(done, total)
+    stats: 可选 dict，回填 {"failed": 失败数, "total": 总行数}（GUI 用来提示
+           "AI 失败 N/M 行，结果不完整"，避免全失败却显示"分析完成"）。
     返回 {row_index: 规范化分析结果}
     """
     try:
@@ -148,6 +151,12 @@ def analyze_rows(rows, api_key: str | None = None, model: str | None = None,
                 done += 1
                 if progress:
                     progress(done, total)
+
+    # 失败计数（缓存命中不算失败）
+    failed = sum(1 for i in range(total) if i in results and not results[i])
+    if stats is not None:
+        stats["failed"] = failed
+        stats["total"] = total
 
     if cache_path:
         try:
