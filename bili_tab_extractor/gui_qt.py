@@ -1070,16 +1070,17 @@ class ReviewWindow(QMainWindow):
         self.del_btn = QPushButton("删除选中行")
         self.del_btn.clicked.connect(self._delete_selected)
         ops.addWidget(self.del_btn)
-        # 「保留组内第一个」：平时隐藏，激活重复组时闪现（特殊发光样式）
-        self.keep_first_btn = QPushButton("⚡ 保留组内第一个")
+        # 「保留组内第一个」：平时隐藏，激活重复组时出现（深青绿强调色）
+        self.keep_first_btn = QPushButton("保留组内第一个")
         self.keep_first_btn.setVisible(False)
         self.keep_first_btn.setStyleSheet(
             "QPushButton {"
-            "  background: #ff6f00; color: #ffffff; font-weight: bold;"
-            "  border: 2px solid #ffd54f; border-radius: 6px;"
-            "  padding: 5px 10px;"
+            "  background: #00796b; color: #ffffff; font-weight: 600;"
+            "  border: none; border-radius: 6px;"
+            "  padding: 6px 14px;"
             "}"
-            "QPushButton:hover { background: #ff8f00; border: 2px solid #ffffff; }")
+            "QPushButton:hover { background: #009688; }"
+            "QPushButton:pressed { background: #00695c; }")
         self.keep_first_btn.setToolTip("保留该重复组第一行，删除其余（可 Ctrl+Z 撤销）")
         self.keep_first_btn.clicked.connect(self._on_keep_first)
         ops.addWidget(self.keep_first_btn)
@@ -1417,7 +1418,7 @@ class ReviewWindow(QMainWindow):
             self.keep_first_btn.setVisible(False)
             return
         self.keep_first_btn.setText(
-            f"⚡ 保留组内第一个（第 {g[0] + 1} 行，删其余 {len(g) - 1} 行）")
+            f"保留组内第一个（第 {g[0] + 1} 行，删其余 {len(g) - 1} 行）")
         self.keep_first_btn.setVisible(True)
 
     def _on_keep_first(self):
@@ -1437,11 +1438,11 @@ class ReviewWindow(QMainWindow):
             if idx == cur:
                 border = "3px solid #1a1a1a"
             elif gi is not None and gi >= 0 and gi == self._active_group:
-                border = "3px solid #ff6f00"
+                border = "3px solid #00796b"      # 深青绿：激活组
             elif gi is not None and gi >= 0 and gi == self._hover_group:
-                border = "3px solid #3949ab"
+                border = "3px solid #3949ab"      # 深蓝：悬停组
             elif gi is not None and gi >= 0 and self._blink_on:
-                border = "2px solid #ff8f00"
+                border = "2px solid #ffb74d"      # 柔和琥珀：重复组闪烁
             else:
                 border = "1px solid #999"
             btn.setStyleSheet(
@@ -1485,7 +1486,7 @@ class ReviewWindow(QMainWindow):
         menu = QMenu(self)
         if g and len(g) >= 2:
             act = menu.addAction(
-                f"⚡ 保留组内第一个（第 {g[0] + 1} 行，删其余 {len(g) - 1} 行）")
+                f"保留组内第一个（第 {g[0] + 1} 行，删其余 {len(g) - 1} 行）")
             act.triggered.connect(lambda: self._keep_first_of_group(list(g)))
         act_del = menu.addAction("删除选中行")
         act_del.triggered.connect(self._delete_selected)
