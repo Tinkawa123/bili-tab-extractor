@@ -20,7 +20,8 @@ import time
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QSize, QThread, Signal, QEasingCurve, QPropertyAnimation
+from PySide6.QtCore import (Qt, QSize, QThread, Signal, QEasingCurve,
+                            QPropertyAnimation, QTimer)
 from PySide6.QtGui import QImage, QPixmap, QIcon, QPainter, QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -356,6 +357,34 @@ class MainWindow(QMainWindow):
     def _log(self, msg: str):
         self.log_text.append(msg)
 
+    def _work_base_dir(self) -> str:
+        """工作目录基路径（保证可写）。
+
+        不能用 os.getcwd()：
+        - 从 IDE/终端启动时 cwd 可能是不存在的目录（如 D:\\Microsoft VS），
+          导致 yt-dlp 写视频报 "Postprocessing: Error opening output files:
+          Permission denied"。
+        优先：exe 所在目录（打包模式）/ 项目根目录（源码模式）→ 系统临时目录。
+        """
+        import tempfile
+
+        if getattr(sys, "frozen", False):
+            cands = [os.path.dirname(sys.executable)]
+        else:
+            here = os.path.dirname(os.path.abspath(__file__))
+            cands = [os.path.dirname(here), here]   # 项目根优先，其次包目录
+        cands.append(tempfile.gettempdir())
+        for d in cands:
+            try:
+                test = os.path.join(d, "_wtest_%d.tmp" % os.getpid())
+                with open(test, "w", encoding="utf-8") as f:
+                    f.write("x")
+                os.remove(test)
+                return d
+            except Exception:
+                continue
+        return tempfile.gettempdir()
+
     def _start(self, auto: bool):
         if self.worker and self.worker.isRunning():
             return
@@ -364,17 +393,27 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请输入 B 站视频链接或本地视频路径")
             return
 
+        # 工作目录基路径：不能用 os.getcwd()（从 IDE/终端启动时 cwd 可能是
+        # 无写权限的目录，导致 yt-dlp 写文件报 "Permission denied"）。
+        base = self._work_base_dir()
         # 清理旧的临时目录
         import glob
-        for d in glob.glob(os.path.join(os.getcwd(), "_gui_work_*")):
+        for d in glob.glob(os.path.join(base, "_gui_work_*")):
             if d != self.work_dir:
                 try:
                     shutil.rmtree(d, ignore_errors=True)
                 except Exception:
                     pass
 
-        self.work_dir = os.path.join(os.getcwd(), "_gui_work_" + str(int(time.time())))
-        os.makedirs(self.work_dir, exist_ok=True)
+        self.work_dir = os.path.join(base, "_gui_work_" + str(int(time.time())))
+        try:
+            os.makedirs(self.work_dir, exist_ok=True)
+        except Exception as e:
+            QMessageBox.critical(
+                self, "无法创建工作目录",
+                f"无法创建临时工作目录：\n{self.work_dir}\n\n{e}\n\n"
+                f"请检查磁盘空间/目录权限。")
+            return
 
         self.start_btn.setEnabled(False)
         self.auto_btn.setEnabled(False)
@@ -767,6 +806,12 @@ class ReviewWindow(QMainWindow):
         # 撤销/重做栈（存完整状态快照）
         self._undo_stack: list[dict] = []
         self._redo_stack: list[dict] = []
+        # 重复组交互状态
+        self._active_group: int | None = None   # 当前激活的重复组索引
+        self._hover_group: int | None = None    # 鼠标悬停的组（整组高亮）
+        self._blink_on = True                   # 闪烁相位
+        self._nav_group_of: dict[int, int] = {} # 行索引 -> 组索引
+        self._nav_group_rows: list[list[int]] = []  # 组索引 -> 行索引列表
 
         self.setWindowTitle(f"人工核验 - {result.title}")
         self.resize(1250, 800)
@@ -993,11 +1038,19 @@ class ReviewWindow(QMainWindow):
         self.list_widget.verticalScrollBar().setSingleStep(24)
         self.list_widget.currentItemChanged.connect(self._on_select)
         self.list_widget.itemDoubleClicked.connect(self._on_double_click)
+        # 右键菜单（保留组内第一个 / 删除 / 撤销）
+        self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._on_context_menu)
         # 拖拽排序：记录拖拽前快照（支持撤销）+ 拖拽后重排 rows
         self._drag_snapshot = None
         self.list_widget.model().rowsAboutToBeMoved.connect(self._on_rows_about_to_move)
         self.list_widget.model().rowsMoved.connect(self._on_rows_moved)
         splitter.addWidget(self.list_widget)
+
+        # 重复组方块闪烁定时器（吸引用户点击）
+        self._blink_timer = QTimer(self)
+        self._blink_timer.timeout.connect(self._on_blink)
+        self._blink_timer.start(700)
 
         # 右：侧边栏预览（PreviewView：滚轮缩放 + 拖拽平移）
         self.preview_view = PreviewView()
@@ -1017,6 +1070,19 @@ class ReviewWindow(QMainWindow):
         self.del_btn = QPushButton("删除选中行")
         self.del_btn.clicked.connect(self._delete_selected)
         ops.addWidget(self.del_btn)
+        # 「保留组内第一个」：平时隐藏，激活重复组时闪现（特殊发光样式）
+        self.keep_first_btn = QPushButton("⚡ 保留组内第一个")
+        self.keep_first_btn.setVisible(False)
+        self.keep_first_btn.setStyleSheet(
+            "QPushButton {"
+            "  background: #ff6f00; color: #ffffff; font-weight: bold;"
+            "  border: 2px solid #ffd54f; border-radius: 6px;"
+            "  padding: 5px 10px;"
+            "}"
+            "QPushButton:hover { background: #ff8f00; border: 2px solid #ffffff; }")
+        self.keep_first_btn.setToolTip("保留该重复组第一行，删除其余（可 Ctrl+Z 撤销）")
+        self.keep_first_btn.clicked.connect(self._on_keep_first)
+        ops.addWidget(self.keep_first_btn)
         self.clean_btn = QPushButton("按 AI 建议清理（删碎片+去重）")
         self.clean_btn.setEnabled(False)
         self.clean_btn.clicked.connect(self._on_clean)
@@ -1230,56 +1296,204 @@ class ReviewWindow(QMainWindow):
         return out
 
     def _refresh_nav_grid(self):
-        """方块阵列导航：每行一个色块，点击跳转。
+        """方块阵列导航：按重复组排列（组内连续、组间留空隙），点击跳转/激活组。
 
-        颜色：绿=正常 / 红=残谱 / 黄系=疑似重复（不同重复组不同黄色）。
-        当前选中行加粗边框高亮。
+        颜色：绿=正常 / 红=残谱 / 黄系=重复组（不同组不同黄）。
+        重复组方块缓慢闪烁吸引注意；选中行粗边框；激活/悬停组整组高亮。
         """
         for btn in self.nav_buttons:
             btn.setParent(None)
             btn.deleteLater()
         self.nav_buttons = []
         self._nav_base_color = {}
+        self._nav_group_of = {}
+        self._nav_group_rows = []
         group_color = self._dup_group_color()
-        cols = 24
-        for i in range(len(self.rows)):
-            frag = i in self._incomplete_rows
-            ai_dup = i in self._ai_dups
-            pix_dup = i in self._similar
-            if frag:
-                color = "#ef5350"      # 红：残谱/碎片
-                tip = f"第 {i + 1} 行：残谱/碎片"
-            elif ai_dup:
-                color = group_color.get(i, "#ffd54f")   # 组色（不同组不同黄）
-                gi = next((k for k, g in enumerate(self._ai_dup_groups) if i in g), -1)
-                tip = f"第 {i + 1} 行：疑似重复（第 {gi + 1} 组）"
-            elif pix_dup:
-                color = "#b0bec5"      # 灰蓝：像素相似
-                tip = f"第 {i + 1} 行：疑似重复（像素）"
+
+        # 重复组（AI + 像素相似）用于分组排列
+        groups = self._all_dup_groups()
+        row2gi: dict[int, int] = {}
+        for gi, g in enumerate(groups):
+            self._nav_group_rows.append(g)
+            for r in g:
+                row2gi[r] = gi
+                self._nav_group_of[r] = gi
+
+        # 构建槽位：组 = 连续方块 + 组后留 1 空格；散行 = 1 格
+        slots: list[tuple[str, int]] = []
+        i = 0
+        n = len(self.rows)
+        while i < n:
+            gi = row2gi.get(i)
+            if gi is not None and i == groups[gi][0]:
+                slots.append(("group", gi))
+                i = groups[gi][-1] + 1
             else:
-                color = "#81c784"      # 绿：正常
-                tip = f"第 {i + 1} 行"
-            self._nav_base_color[i] = color
-            btn = QPushButton()
-            btn.setFixedSize(16, 16)
-            btn.setToolTip(tip)
-            btn.clicked.connect(lambda checked=False, idx=i: self._jump_to_index(idx))
-            self.nav_grid.addWidget(btn, i // cols, i % cols)
-            self.nav_buttons.append(btn)
-        # 应用样式（含当前选中高亮）
+                slots.append(("row", i))
+                i += 1
+
+        cols = 24
+        row = 0
+        col = 0
+        for kind, payload in slots:
+            if kind == "row":
+                self._make_nav_button(payload, row2gi.get(payload, -1),
+                                      group_color.get(payload, ""), row, col)
+                col += 1
+                if col >= cols:
+                    col = 0
+                    row += 1
+            else:
+                gi = payload
+                for idx in groups[gi]:
+                    self._make_nav_button(idx, gi, group_color.get(idx, "#ffd54f"),
+                                          row, col)
+                    col += 1
+                    if col >= cols:
+                        col = 0
+                        row += 1
+                # 组间空隙（留一列空白）
+                col += 1
+                if col >= cols:
+                    col = 0
+                    row += 1
         cur = self.list_widget.currentRow()
         self._highlight_nav(cur if cur >= 0 else -1)
 
-    def _highlight_nav(self, idx: int):
-        """高亮导航方块（选中行加粗边框），其余恢复基础样式。"""
-        for k, btn in enumerate(self.nav_buttons):
-            base = self._nav_base_color.get(k, "#81c784")
-            if k == idx:
+    def _make_nav_button(self, idx: int, gi: int, color: str,
+                         row: int, col: int):
+        """创建一个导航方块（gi=-1 表示不属于重复组）。"""
+        frag = idx in self._incomplete_rows
+        pix_dup = idx in self._similar
+        if frag:
+            color = "#ef5350"
+            tip = f"第 {idx + 1} 行：残谱/碎片"
+        elif gi >= 0:
+            color = color or "#ffd54f"
+            tip = (f"第 {idx + 1} 行：重复组 {gi + 1}（点击激活，"
+                   f"可一键保留第一个）")
+        elif pix_dup:
+            color = "#b0bec5"
+            tip = f"第 {idx + 1} 行：疑似重复（像素）"
+        else:
+            color = "#81c784"
+            tip = f"第 {idx + 1} 行"
+        self._nav_base_color[idx] = color
+        btn = QPushButton()
+        btn.setFixedSize(16, 16)
+        btn.setToolTip(tip)
+        btn.setProperty("row_idx", int(idx))
+        btn.setProperty("group_idx", int(gi))
+        btn.installEventFilter(self)
+        btn.clicked.connect(
+            lambda checked=False, i=idx, g=gi: self._on_nav_click(i, g if g >= 0 else None))
+        self.nav_grid.addWidget(btn, row, col)
+        self.nav_buttons.append(btn)
+
+    def _on_nav_click(self, idx: int, gi: int | None):
+        """点导航方块：跳转；若属于重复组则激活该组。"""
+        self._jump_to_index(idx)
+        if gi is not None:
+            self._activate_dup_group(gi)
+
+    def _activate_dup_group(self, gi: int):
+        """激活重复组：高亮整组、显示「保留组内第一个」按钮。"""
+        if gi is None or not (0 <= gi < len(self._nav_group_rows)):
+            return
+        self._active_group = gi
+        g = self._nav_group_rows[gi]
+        if g:
+            self._jump_to_index(g[0])
+        self._update_keep_first_btn()
+        self._highlight_nav(g[0] if g else -1)
+
+    def _update_keep_first_btn(self):
+        """根据激活组更新「保留组内第一个」按钮（可见性/文字）。"""
+        if self._active_group is None or self._active_group >= len(self._nav_group_rows):
+            self.keep_first_btn.setVisible(False)
+            return
+        g = self._nav_group_rows[self._active_group]
+        if len(g) < 2:
+            self.keep_first_btn.setVisible(False)
+            return
+        self.keep_first_btn.setText(
+            f"⚡ 保留组内第一个（第 {g[0] + 1} 行，删其余 {len(g) - 1} 行）")
+        self.keep_first_btn.setVisible(True)
+
+    def _on_keep_first(self):
+        """点「保留组内第一个」：保留激活组第一行，删其余。"""
+        if self._active_group is None:
+            return
+        g = list(self._nav_group_rows[self._active_group])
+        self._active_group = None
+        self._keep_first_of_group(g)
+
+    def _highlight_nav(self, cur: int):
+        """高亮导航方块：选中行 > 激活组 > 悬停组 > 重复组闪烁 > 普通。"""
+        for btn in self.nav_buttons:
+            idx = btn.property("row_idx")
+            gi = btn.property("group_idx")
+            base = self._nav_base_color.get(idx, "#81c784")
+            if idx == cur:
                 border = "3px solid #1a1a1a"
+            elif gi is not None and gi >= 0 and gi == self._active_group:
+                border = "3px solid #ff6f00"
+            elif gi is not None and gi >= 0 and gi == self._hover_group:
+                border = "3px solid #3949ab"
+            elif gi is not None and gi >= 0 and self._blink_on:
+                border = "2px solid #ff8f00"
             else:
                 border = "1px solid #999"
             btn.setStyleSheet(
                 f"QPushButton {{ background: {base}; border: {border}; border-radius: 2px; }}")
+
+    def _on_blink(self):
+        """重复组方块闪烁（切换相位）。"""
+        if not self._nav_group_rows:
+            self._blink_on = True
+            return
+        self._blink_on = not self._blink_on
+        cur = self.list_widget.currentRow()
+        self._highlight_nav(cur if cur >= 0 else -1)
+
+    def eventFilter(self, obj, event):
+        """导航方块悬停：整组高亮。"""
+        from PySide6.QtCore import QEvent
+        t = event.type()
+        if t in (QEvent.Enter, QEvent.Leave):
+            try:
+                gi = obj.property("group_idx")
+            except Exception:
+                gi = None
+            if gi is not None and gi >= 0:
+                if t == QEvent.Enter:
+                    self._hover_group = gi
+                elif self._hover_group == gi:
+                    self._hover_group = None
+                cur = self.list_widget.currentRow()
+                self._highlight_nav(cur if cur >= 0 else -1)
+        return super().eventFilter(obj, event)
+
+    def _on_context_menu(self, pos):
+        """列表右键菜单：保留组内第一个 / 删除 / 撤销。"""
+        from PySide6.QtWidgets import QMenu
+        item = self.list_widget.itemAt(pos)
+        if item is None:
+            return
+        idx = item.data(Qt.UserRole)
+        g = self._dup_group_of(idx) if isinstance(idx, int) else None
+        menu = QMenu(self)
+        if g and len(g) >= 2:
+            act = menu.addAction(
+                f"⚡ 保留组内第一个（第 {g[0] + 1} 行，删其余 {len(g) - 1} 行）")
+            act.triggered.connect(lambda: self._keep_first_of_group(list(g)))
+        act_del = menu.addAction("删除选中行")
+        act_del.triggered.connect(self._delete_selected)
+        if self._undo_stack:
+            menu.addSeparator()
+            act_undo = menu.addAction("撤销（Ctrl+Z）")
+            act_undo.triggered.connect(self._undo)
+        menu.exec(self.list_widget.mapToGlobal(pos))
 
     def _jump_to_index(self, idx: int):
         """跳到指定行（方块阵列/导航用）。"""
@@ -1410,15 +1624,28 @@ class ReviewWindow(QMainWindow):
     def _remap_after_delete(self, idx: int):
         """删除第 idx 行后，重映射所有按索引存储的结果（AI 标记/相似/碎片），
         而不是清空或重算——这样删掉一对重复行后，其余标记仍然保留，且删除很快。"""
+        self._remap_after_delete_rows({idx})
+
+    def _remap_after_delete_rows(self, deleted: set[int]):
+        """删除多行（索引集合）后重映射所有按索引存储的结果。"""
+        n_old = len(self.rows)
+        mapping: dict[int, int] = {}
+        j = 0
+        for i in range(n_old):
+            if i in deleted:
+                continue
+            mapping[i] = j
+            j += 1
+
         def shift_list(lst):
-            return [x - 1 if x > idx else x for x in lst if x != idx]
+            return [mapping[x] for x in lst if x in mapping]
 
         def shift_dict(d):
             out = {}
             for k, v in d.items():
-                if k == idx:
+                if k not in mapping:
                     continue
-                nk = k - 1 if k > idx else k
+                nk = mapping[k]
                 out[nk] = shift_list(v) if isinstance(v, list) else v
             return out
 
@@ -1431,9 +1658,51 @@ class ReviewWindow(QMainWindow):
             return
         self._ai_analyses = shift_dict(self._ai_analyses)
         self._ai_dups = shift_dict(self._ai_dups)
-        self._incomplete_rows = {x - 1 if x > idx else x
-                                 for x in self._incomplete_rows if x != idx}
+        self._incomplete_rows = {mapping[x] for x in self._incomplete_rows if x in mapping}
         self._ai_dup_groups = [shift_list(g) for g in self._ai_dup_groups]
+
+    # ---------- 重复组操作（保留组内第一个）----------
+
+    def _all_dup_groups(self) -> list[list[int]]:
+        """所有重复组（AI 语义判重 + 像素相似），去重后按首行排序。"""
+        groups: list[list[int]] = []
+        seen: set[tuple] = set()
+        for g in list(self._ai_dup_groups) + list(self._similar_groups):
+            g = sorted(x for x in g if 0 <= x < len(self.rows))
+            if len(g) < 2:
+                continue
+            key = tuple(g)
+            if key in seen:
+                continue
+            seen.add(key)
+            groups.append(g)
+        groups.sort(key=lambda g: g[0])
+        return groups
+
+    def _dup_group_of(self, row_idx: int) -> list[int] | None:
+        """该行所属的重复组（没有则 None）。"""
+        for g in self._all_dup_groups():
+            if row_idx in g:
+                return g
+        return None
+
+    def _keep_first_of_group(self, group: list[int]):
+        """保留组内第一行，删除其余（可 Ctrl+Z 撤销）。"""
+        valid = sorted(x for x in group if 0 <= x < len(self.rows))
+        if len(valid) < 2:
+            return
+        keep = valid[0]
+        to_del = set(valid[1:])
+        self._push_undo()
+        # 删除前把被删行存入"丢弃池"（供找回）
+        for i in sorted(to_del):
+            self.result.all_rows.append(self.rows[i])
+        self._remap_after_delete_rows(to_del)
+        self.rows = [r for i, r in enumerate(self.rows) if i not in to_del]
+        self._render_list()
+        msg = f"已保留第 {keep + 1} 行，删除组内其余 {len(to_del)} 行（可 Ctrl+Z 撤销）"
+        self.status_top.setText(msg)
+        self._log(msg)
 
     def _recalc_bar_dups(self):
         """兼容旧调用：行变化后重算相似标记（保留 AI 结果）。"""
