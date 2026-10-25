@@ -378,12 +378,27 @@ def process(url: str = None, video: str = None, title: str = None,
             # 整屏一行（静止/翻页/轻微滚动）：每帧一屏作为一行，后续像素去重
             mode = "cv_screen"
             p("正在整理整屏谱行…", 45)
+            n_ph = 0
             for ci, img in enumerate(crop_imgs):
                 try:
                     img = crop_screen_top(img, thresholds=thresholds)
                 except Exception:
                     pass
+                # 检测并涂掉"播放光标"（蓝/青色高亮竖条）：
+                # 同一行谱面在光标位置不同时会被误判为不同帧（重复截取），
+                # 涂白后指纹/像素比较都不受光标影响，PDF 也更干净。
+                # band_half_width 用 30px（只盖光标细线，避免误伤谱面内容）。
+                try:
+                    from barlines import detect_playhead, mask_playhead
+                    center, peak = detect_playhead(img)
+                    if center is not None:
+                        img = mask_playhead(img, [center], band_half_width=30)
+                        n_ph += 1
+                except Exception:
+                    pass
                 all_rows.append(TabRow(img, ci * interval, f"screen-{ci}", ci))
+            if n_ph:
+                log.info(f"检测并涂除播放光标 {n_ph} 帧（避免光标位置不同导致重复截取）")
 
         if not all_rows:
             # 行级切分（多行排列）：收集所有行（含被去重的，供人工核验找回）
