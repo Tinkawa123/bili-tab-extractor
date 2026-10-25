@@ -19,26 +19,45 @@ import threading
 
 import requests  # yt-dlp 的既有依赖，打包零额外体积
 
-# DashScope OpenAI 兼容接口
-DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_MODEL = "qwen3-vl-plus"   # 视觉能力最强；额度耗尽时自动降级
+# ---------- AI 提供商配置 ----------
+# 每家提供商：base_url、可用视觉模型（GUI 下拉）、降级链、调用参数
+PROVIDERS = {
+    "dashscope": {
+        "name": "DashScope（阿里云百炼）",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "models": [
+            ("qwen3-vl-plus", "视觉最强（默认，免费额度有限，可能 403 额度耗尽）"),
+            ("qwen-vl-ocr-2025-11-20", "OCR 专用（歌词/和弦均衡，推荐备用）"),
+            ("qwen3.5-ocr", "新版 OCR（和弦更细，歌词识别弱）"),
+            ("qwen-vl-ocr", "OCR 专用（稳定）"),
+            ("qwen-vl-max-latest", "视觉旗舰（需开通）"),
+            ("qwen-vl-plus-latest", "视觉增强（需开通）"),
+            ("qwen2.5-vl-72b-instruct", "旧版视觉（需开通）"),
+        ],
+        "fallbacks": ["qwen-vl-ocr-2025-11-20", "qwen-vl-ocr", "qwen3.5-ocr"],
+        "max_tokens": None,     # 不传，由服务端默认
+        "timeout": 120,
+    },
+    "deepseek": {
+        "name": "DeepSeek（视觉推理）",
+        "base_url": "https://api.deepseek.com",
+        "models": [
+            ("deepseek-flash", "视觉+推理（识别准，但慢：30-60 秒/张）"),
+        ],
+        # deepseek-flash 是推理模型：max_tokens 太小会把额度全花在"思考"上，
+        # 导致 content 为空。实测复杂提示词需 16000 才稳定输出 JSON。
+        "fallbacks": ["deepseek-flash"],
+        "max_tokens": 16000,
+        "timeout": 300,
+    },
+}
+DEFAULT_PROVIDER = "dashscope"
 
-# 推荐模型列表（GUI 下拉展示）：(model, 说明)
-# 说明基于本机实测（2026-10）：qwen3-vl-plus 视觉最强但免费额度易耗尽；
-# qwen-vl-ocr-2025-11-20 歌词/和弦识别均衡（推荐备用首选）；
-# qwen3.5-ocr 和弦更细但歌词识别弱；其余需开通权限。
-RECOMMENDED_MODELS = [
-    ("qwen3-vl-plus", "视觉最强（默认，免费额度有限，可能 403 额度耗尽）"),
-    ("qwen-vl-ocr-2025-11-20", "OCR 专用（歌词/和弦均衡，推荐备用）"),
-    ("qwen3.5-ocr", "新版 OCR（和弦更细，歌词识别弱）"),
-    ("qwen-vl-ocr", "OCR 专用（稳定）"),
-    ("qwen-vl-max-latest", "视觉旗舰（需开通）"),
-    ("qwen-vl-plus-latest", "视觉增强（需开通）"),
-    ("qwen2.5-vl-72b-instruct", "旧版视觉（需开通）"),
-]
-
-# 降级链：主模型失败（额度/权限问题）时依次尝试
-MODEL_FALLBACKS = ["qwen-vl-ocr-2025-11-20", "qwen-vl-ocr", "qwen3.5-ocr"]
+# 兼容旧常量（其他模块可能引用）
+DASHSCOPE_BASE_URL = PROVIDERS["dashscope"]["base_url"]
+DEFAULT_MODEL = "qwen3-vl-plus"
+RECOMMENDED_MODELS = PROVIDERS["dashscope"]["models"]
+MODEL_FALLBACKS = PROVIDERS["dashscope"]["fallbacks"]
 
 # 本次运行用量统计（估算，供日志/界面显示）
 _USAGE = {
@@ -88,52 +107,95 @@ def estimate_image_tokens(width: int, height: int) -> int:
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vlm_config.json")
 
 
-def load_api_key() -> str | None:
-    """读取 API Key：环境变量优先，其次本地配置文件。"""
-    key = os.environ.get("DASHSCOPE_API_KEY")
-    if key:
-        return key.strip()
-    return load_config_key()
-
-
-def load_config_key() -> str | None:
-    """只从本地配置文件读取 Key（GUI 设置用）。"""
+def _load_config() -> dict:
+    """读取整个配置文件（容错）。"""
     if os.path.isfile(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, encoding="utf-8") as f:
-                return (json.load(f).get("api_key") or "").strip() or None
+                return json.load(f) or {}
         except Exception:
             pass
+    return {}
+
+
+def _save_config(data: dict) -> None:
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def load_provider() -> str:
+    """当前 AI 提供商（dashscope / deepseek）。"""
+    p = (_load_config().get("provider") or "").strip()
+    return p if p in PROVIDERS else DEFAULT_PROVIDER
+
+
+def set_provider(provider: str) -> None:
+    data = _load_config()
+    if provider in PROVIDERS:
+        data["provider"] = provider
+        _save_config(data)
+
+
+def load_api_key(provider: str | None = None) -> str | None:
+    """读取 API Key：环境变量优先（按提供商），其次本地配置文件。"""
+    provider = provider or load_provider()
+    env_name = "DASHSCOPE_API_KEY" if provider == "dashscope" else "DEEPSEEK_API_KEY"
+    key = os.environ.get(env_name)
+    if key:
+        return key.strip()
+    return load_config_key(provider)
+
+
+def load_config_key(provider: str | None = None) -> str | None:
+    """只从本地配置文件读取 Key（GUI 设置用）。兼容旧的单 key 字段。"""
+    provider = provider or load_provider()
+    data = _load_config()
+    keys = data.get("keys") or {}
+    k = (keys.get(provider) or "").strip()
+    if k:
+        return k
+    # 兼容旧格式：{"api_key": "..."} 只有 DashScope 时代的 key
+    if provider == "dashscope":
+        return (data.get("api_key") or "").strip() or None
     return None
 
 
-def save_api_key(key: str, model: str | None = None) -> None:
-    """保存 API Key（及可选模型）到本地配置文件。"""
-    data = {}
-    if os.path.isfile(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            data = {}
-    data["api_key"] = key.strip()
+def save_api_key(key: str, model: str | None = None,
+                 provider: str | None = None) -> None:
+    """保存 API Key（按提供商分开存）及模型到本地配置文件。"""
+    provider = provider or load_provider()
+    data = _load_config()
+    keys = data.get("keys") or {}
+    keys[provider] = key.strip()
+    data["keys"] = keys
+    data["provider"] = provider
+    # 兼容旧字段（保留 DashScope 的 key）
+    if provider == "dashscope" or not data.get("api_key"):
+        data["api_key"] = key.strip()
     if model:
         data["model"] = model.strip()
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        data["model_provider"] = provider
+    _save_config(data)
 
 
-def load_model() -> str:
-    """读取配置的模型名（默认 qwen3-vl-plus）。"""
-    if os.path.isfile(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, encoding="utf-8") as f:
-                m = (json.load(f).get("model") or "").strip()
-                if m:
-                    return m
-        except Exception:
-            pass
-    return DEFAULT_MODEL
+def load_model(provider: str | None = None) -> str:
+    """读取当前提供商的模型名（未配置则用该提供商第一个推荐模型）。"""
+    provider = provider or load_provider()
+    data = _load_config()
+    if data.get("model_provider") == provider:
+        m = (data.get("model") or "").strip()
+        if m:
+            return m
+    # 旧配置（无 model_provider）：仅当是 dashscope 时沿用旧 model
+    if "model_provider" not in data and provider == "dashscope":
+        m = (data.get("model") or "").strip()
+        if m:
+            return m
+    models = PROVIDERS[provider]["models"]
+    return models[0][0] if models else DEFAULT_MODEL
 
 
 def _require_key(api_key: str | None) -> str:
@@ -211,25 +273,31 @@ def _extract_json(text: str) -> dict:
 
 
 def _post_once(key: str, model: str, prompt: str, image_data_url: str,
-               timeout: float) -> dict:
+               timeout: float, base_url: str | None = None,
+               max_tokens: int | None = None) -> dict:
     """单次请求（不做降级），失败抛 RuntimeError。"""
+    payload = {
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ],
+        }],
+        "temperature": 0.1,
+    }
+    if max_tokens:
+        # 推理模型（如 deepseek-flash）必须给足额度，否则全被 reasoning 消耗、
+        # content 为空。
+        payload["max_tokens"] = max_tokens
     resp = requests.post(
-        f"{DASHSCOPE_BASE_URL}/chat/completions",
+        f"{base_url or DASHSCOPE_BASE_URL}/chat/completions",
         headers={
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
         },
-        json={
-            "model": model,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_data_url}},
-                ],
-            }],
-            "temperature": 0.1,
-        },
+        json=payload,
         timeout=timeout,
     )
     if resp.status_code == 401:
@@ -256,14 +324,20 @@ def _post_once(key: str, model: str, prompt: str, image_data_url: str,
 
 def _call(api_key: str | None, model: str, prompt: str, image_data_url: str,
           timeout: float) -> dict:
-    """调用 DashScope OpenAI 兼容接口，失败自动降级到备选模型。
+    """调用当前 AI 提供商的 OpenAI 兼容接口，失败自动降级到备选模型。
 
-    降级链：指定模型 → MODEL_FALLBACKS 中其它模型。
+    降级链：指定模型 → 该提供商 fallbacks 中的其它模型。
     只有"额度/权限/格式"错误才降级；Key 无效（401）直接抛错。
     """
     key = _require_key(api_key)
+    provider = load_provider()
+    prov = PROVIDERS.get(provider, PROVIDERS[DEFAULT_PROVIDER])
+    base_url = prov["base_url"]
+    max_tokens = prov.get("max_tokens")
+    # 推理模型（DeepSeek）单张就要 30-60 秒，超时要给足
+    eff_timeout = max(timeout, float(prov.get("timeout", 120)))
     candidates = [model]
-    for fb in MODEL_FALLBACKS:
+    for fb in prov.get("fallbacks", []):
         if fb not in candidates:
             candidates.append(fb)
 
@@ -271,7 +345,8 @@ def _call(api_key: str | None, model: str, prompt: str, image_data_url: str,
     global _fallback_asked, _fallback_denied
     for m in candidates:
         try:
-            result = _post_once(key, m, prompt, image_data_url, timeout)
+            result = _post_once(key, m, prompt, image_data_url, eff_timeout,
+                                base_url=base_url, max_tokens=max_tokens)
             _USAGE["calls"] += 1
             _USAGE["by_model"][m] = _USAGE["by_model"].get(m, 0) + 1
             return result

@@ -485,44 +485,44 @@ class MainWindow(QMainWindow):
 
 
 class ApiSettingsDialog(QDialog):
-    """AI 设置对话框：配置 DashScope API Key 与模型。"""
+    """AI 设置对话框：配置 AI 提供商、API Key 与模型。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("AI 设置")
-        self.resize(560, 260)
+        self.resize(600, 330)
+        from PySide6.QtWidgets import QComboBox
+        from vlm import PROVIDERS, load_provider
+
         lay = QVBoxLayout(self)
 
-        lay.addWidget(QLabel("DashScope API Key（阿里云百炼）："))
+        # 提供商选择
+        lay.addWidget(QLabel("AI 提供商："))
+        self.provider_combo = QComboBox()
+        self._providers = PROVIDERS
+        for pid, p in PROVIDERS.items():
+            self.provider_combo.addItem(p["name"], pid)
+        cur_p = load_provider()
+        idx = self.provider_combo.findData(cur_p)
+        if idx >= 0:
+            self.provider_combo.setCurrentIndex(idx)
+        lay.addWidget(self.provider_combo)
+
+        lay.addWidget(QLabel("API Key："))
         self.key_edit = QLineEdit()
         self.key_edit.setEchoMode(QLineEdit.Password)
         self.key_edit.setPlaceholderText("sk-...")
-        old = load_config_key() or ""
-        self.key_edit.setText(old)
         lay.addWidget(self.key_edit)
 
         lay.addWidget(QLabel("模型（可下拉选择推荐模型，也可手动输入）："))
-        from PySide6.QtWidgets import QComboBox
-        from vlm import RECOMMENDED_MODELS
         self.model_combo = QComboBox()
         self.model_combo.setEditable(True)   # 允许手动输入非列表模型
-        for code, desc in RECOMMENDED_MODELS:
-            self.model_combo.addItem(f"{code}    （{desc}）", code)
-        cur = load_model()
-        # 定位到当前模型（找不到则手动填入）
-        idx = self.model_combo.findData(cur)
-        if idx >= 0:
-            self.model_combo.setCurrentIndex(idx)
-        else:
-            self.model_combo.setEditText(cur)
         lay.addWidget(self.model_combo)
 
-        hint = QLabel(
-            "Key 保存在 bili_tab_extractor/vlm_config.json（已 gitignore，不会上传）。\n"
-            "申请地址：https://bailian.console.aliyun.com → API-KEY 管理\n"
-            "提示：主模型额度耗尽（403）时会自动降级到 qwen-vl-ocr 系列，不会中断。")
-        hint.setObjectName("hint")
-        lay.addWidget(hint)
+        self.hint = QLabel("")
+        self.hint.setObjectName("hint")
+        self.hint.setWordWrap(True)
+        lay.addWidget(self.hint)
 
         self.test_label = QLabel("")
         lay.addWidget(self.test_label)
@@ -541,21 +541,56 @@ class ApiSettingsDialog(QDialog):
         btns.addWidget(self.save_btn)
         lay.addLayout(btns)
 
+        self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
+        self._on_provider_changed()   # 初始化：填充 Key/模型/提示
+
+    def _on_provider_changed(self):
+        """切换提供商：刷新 Key、模型列表、提示文字。"""
+        from vlm import load_config_key, load_model
+        pid = self.provider_combo.currentData() or "dashscope"
+        prov = self._providers.get(pid, {})
+        # Key（按提供商分别读取）
+        self.key_edit.setText(load_config_key(pid) or "")
+        # 模型列表
+        self.model_combo.clear()
+        for code, desc in prov.get("models", []):
+            self.model_combo.addItem(f"{code}    （{desc}）", code)
+        cur = load_model(pid)
+        idx = self.model_combo.findData(cur)
+        if idx >= 0:
+            self.model_combo.setCurrentIndex(idx)
+        else:
+            self.model_combo.setEditText(cur)
+        # 提示
+        if pid == "deepseek":
+            self.hint.setText(
+                "申请地址：https://platform.deepseek.com → API keys\n"
+                "注意：deepseek-flash 是推理模型，单张图 30-60 秒（慢但识别准），"
+                "max_tokens 需给足。\n"
+                "Key 保存在 bili_tab_extractor/vlm_config.json（已 gitignore，不会上传）。")
+        else:
+            self.hint.setText(
+                "申请地址：https://bailian.console.aliyun.com → API-KEY 管理\n"
+                "提示：主模型额度耗尽（403）时会自动降级到 qwen-vl-ocr 系列（会弹框确认）。\n"
+                "Key 保存在 bili_tab_extractor/vlm_config.json（已 gitignore，不会上传）。")
+
     def _current_model(self) -> str:
         """当前选中的模型 code（下拉项取 data，手动输入取文本）。"""
         text = self.model_combo.currentText().strip()
-        # 下拉项文本格式是 "code    （说明）"，提取 code
         code = self.model_combo.currentData()
         if code and text.startswith(str(code)):
             return str(code)
         return text.split("    ")[0].strip()
 
     def _save(self):
+        from vlm import save_api_key, set_provider
         key = self.key_edit.text().strip()
+        pid = self.provider_combo.currentData() or "dashscope"
         if not key:
             QMessageBox.warning(self, "提示", "请填写 API Key")
             return
-        save_api_key(key, self._current_model() or None)
+        save_api_key(key, self._current_model() or None, provider=pid)
+        set_provider(pid)
         self.accept()
 
     def _test(self):
@@ -563,23 +598,27 @@ class ApiSettingsDialog(QDialog):
         if not key:
             self.test_label.setText("请先填写 API Key")
             return
+        pid = self.provider_combo.currentData() or "dashscope"
+        prov = self._providers.get(pid, {})
+        base_url = prov.get("base_url", "")
         model = self._current_model()
         self.test_label.setText("测试中…")
         self.test_btn.setEnabled(False)
         try:
             import requests
-            from vlm import DASHSCOPE_BASE_URL
-            # 实际测"当前模型"能否调用（比 /models 列表更准）
+            # 实际测"当前模型"能否调用（比 /models 列表更准）。
+            # 推理模型（deepseek-flash）max_tokens 太小会被 reasoning 吃掉，
+            # 这里只验证连通性，max_tokens 给小值即可（返回 200 就算通）。
             r = requests.post(
-                f"{DASHSCOPE_BASE_URL}/chat/completions",
+                f"{base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {key}",
                          "Content-Type": "application/json"},
                 json={"model": model,
                       "messages": [{"role": "user", "content": "hi"}],
                       "max_tokens": 5},
-                timeout=25)
+                timeout=60)
             if r.status_code == 200:
-                self.test_label.setText(f"连接成功（模型 {model} 可用）")
+                self.test_label.setText(f"连接成功（{prov.get('name', pid)} / {model} 可用）")
             elif r.status_code == 403:
                 code = ""
                 try:
@@ -587,9 +626,9 @@ class ApiSettingsDialog(QDialog):
                 except Exception:
                     pass
                 self.test_label.setText(
-                    f"模型 {model} 额度/权限不足（403 {code}）—— 保存后处理时会自动降级到 qwen-vl-ocr")
+                    f"模型 {model} 额度/权限不足（403 {code}）—— 保存后处理时会自动降级")
             else:
-                self.test_label.setText(f"失败：HTTP {r.status_code}")
+                self.test_label.setText(f"失败：HTTP {r.status_code} {r.text[:100]}")
         except Exception as e:
             self.test_label.setText(f"失败：{e}")
         finally:
